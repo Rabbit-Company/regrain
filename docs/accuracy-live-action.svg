@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="525" viewBox="0 0 800 525" role="img" aria-label="Relative error on live action clips, lower is better. crowd_run: regrain full 1.5%, regrain quarter 1.7%, grav1synth 0.3.8 5.7%, grav1synth 0.2.0 6.3%; old_town_cross: regrain full 1.2%, regrain quarter 1.1%, grav1synth 0.3.8 7.0%, grav1synth 0.2.0 6.4%; park_joy: regrain full 1.2%, regrain quarter 0.9%, grav1synth 0.3.8 2.3%, grav1synth 0.2.0 2.3%; in_to_tree: regrain full 0.8%, regrain quarter 0.9%, grav1synth 0.3.8 27.4%, grav1synth 0.2.0 27.4%; aspen: regrain full 0.9%, regrain quarter 0.9%, grav1synth 0.3.8 4.4%, grav1synth 0.2.0 4.5%">
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif}
+.t{fill:#0b0b0b;font-size:15px;font-weight:600}
+.l{fill:#0b0b0b;font-size:14px}
+.n{fill:#52514e;font-size:12px}
+.m{fill:#52514e;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.v{fill:#0b0b0b;font-size:14px;font-weight:600}
+.w{fill:#52514e;font-size:13px;font-weight:400}
+.a{fill:#8a8984;font-size:12px}
+.g{stroke:#e4e3df;stroke-width:1}
+.b0{stroke:#8a8984;stroke-width:1}
+.regrain{fill:#2a78d6}.regrain2{fill:#8bb8ec}.other{fill:#a3a29c}.other2{fill:#d3d2cc}
+@media (prefers-color-scheme:dark){
+.t,.l,.v{fill:#f0efec}.m,.n,.w{fill:#c3c2b7}.a{fill:#8f8e86}
+.g{stroke:#30363d}.b0{stroke:#8f8e86}
+.regrain{fill:#3987e5}.regrain2{fill:#1f5aa6}.other{fill:#8a8984}.other2{fill:#55544f}}
+</style>
+<text class="t" x="16" y="24">Relative error on live action clips, lower is better</text>
+<rect class="regrain" x="16" y="39" width="12" height="12" rx="3"/>
+<text class="l" x="34" y="50">regrain <tspan class="m">full</tspan></text>
+<rect class="regrain2" x="144.4" y="39" width="12" height="12" rx="3"/>
+<text class="l" x="162.4" y="50">regrain <tspan class="m">quarter</tspan></text>
+<rect class="other" x="294.4" y="39" width="12" height="12" rx="3"/>
+<text class="l" x="312.4" y="50">grav1synth 0.3.8</text>
+<rect class="other2" x="451.59999999999997" y="39" width="12" height="12" rx="3"/>
+<text class="l" x="469.59999999999997" y="50">grav1synth 0.2.0</text>
+<line class="g" x1="236.0" y1="70" x2="236.0" y2="491"/>
+<text class="a" x="236.0" y="509" text-anchor="middle">0%</text>
+<line class="g" x1="322.4" y1="70" x2="322.4" y2="491"/>
+<text class="a" x="322.4" y="509" text-anchor="middle">5%</text>
+<line class="g" x1="408.9" y1="70" x2="408.9" y2="491"/>
+<text class="a" x="408.9" y="509" text-anchor="middle">10%</text>
+<line class="g" x1="495.3" y1="70" x2="495.3" y2="491"/>
+<text class="a" x="495.3" y="509" text-anchor="middle">15%</text>
+<line class="g" x1="581.7" y1="70" x2="581.7" y2="491"/>
+<text class="a" x="581.7" y="509" text-anchor="middle">20%</text>
+<line class="g" x1="668.1" y1="70" x2="668.1" y2="491"/>
+<text class="a" x="668.1" y="509" text-anchor="middle">25%</text>
+<text class="l" x="222" y="103.5" text-anchor="end">crowd_run</text>
+<text class="n" x="222" y="119.5" text-anchor="end">Film, 1080p, 500 frames</text>
+<path class="regrain" d="M236,76.0 h21.9 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-21.9 z"/>
+<text class="v" x="269.9" y="87.0">1.5%</text>
+<path class="regrain2" d="M236,92.0 h25.4 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-25.4 z"/>
+<text class="v" x="273.4" y="103.0">1.7%</text>
+<path class="other" d="M236,108.0 h94.5 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-94.5 z"/>
+<text class="v" x="342.5" y="119.0">5.7%</text>
+<path class="other2" d="M236,124.0 h104.9 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-104.9 z"/>
+<text class="v" x="352.9" y="135.0">6.3%</text>
+<text class="l" x="222" y="188.5" text-anchor="end">old_town_cross</text>
+<text class="n" x="222" y="204.5" text-anchor="end">Film, 1080p, 500 frames</text>
+<path class="regrain" d="M236,161.0 h16.7 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-16.7 z"/>
+<text class="v" x="264.7" y="172.0">1.2%</text>
+<path class="regrain2" d="M236,177.0 h15.0 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-15.0 z"/>
+<text class="v" x="263.0" y="188.0">1.1%</text>
+<path class="other" d="M236,193.0 h117.0 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-117.0 z"/>
+<text class="v" x="365.0" y="204.0">7.0%</text>
+<path class="other2" d="M236,209.0 h106.6 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-106.6 z"/>
+<text class="v" x="354.6" y="220.0">6.4%</text>
+<text class="l" x="222" y="273.5" text-anchor="end">park_joy</text>
+<text class="n" x="222" y="289.5" text-anchor="end">Film, foliage, 1080p, 500 frames</text>
+<path class="regrain" d="M236,246.0 h16.7 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-16.7 z"/>
+<text class="v" x="264.7" y="257.0">1.2%</text>
+<path class="regrain2" d="M236,262.0 h11.6 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-11.6 z"/>
+<text class="v" x="259.6" y="273.0">0.9%</text>
+<path class="other" d="M236,278.0 h35.8 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-35.8 z"/>
+<text class="v" x="283.8" y="289.0">2.3%</text>
+<path class="other2" d="M236,294.0 h35.8 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-35.8 z"/>
+<text class="v" x="283.8" y="305.0">2.3%</text>
+<text class="l" x="222" y="358.5" text-anchor="end">in_to_tree</text>
+<text class="n" x="222" y="374.5" text-anchor="end">Film, native 4K, 100 frames</text>
+<path class="regrain" d="M236,331.0 h9.8 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-9.8 z"/>
+<text class="v" x="257.8" y="342.0">0.8%</text>
+<path class="regrain2" d="M236,347.0 h11.6 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-11.6 z"/>
+<text class="v" x="259.6" y="358.0">0.9%</text>
+<path class="other" d="M236,363.0 h469.6 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-469.6 z"/>
+<text class="v" x="717.6" y="374.0">27.4%</text>
+<path class="other2" d="M236,379.0 h469.6 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-469.6 z"/>
+<text class="v" x="717.6" y="390.0">27.4%</text>
+<text class="l" x="222" y="443.5" text-anchor="end">aspen</text>
+<text class="n" x="222" y="459.5" text-anchor="end">Camera, 4:2:2, 1080p, 300 frames</text>
+<path class="regrain" d="M236,416.0 h11.6 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-11.6 z"/>
+<text class="v" x="259.6" y="427.0">0.9%</text>
+<path class="regrain2" d="M236,432.0 h11.6 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-11.6 z"/>
+<text class="v" x="259.6" y="443.0">0.9%</text>
+<path class="other" d="M236,448.0 h72.1 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-72.1 z"/>
+<text class="v" x="320.1" y="459.0">4.4%</text>
+<path class="other2" d="M236,464.0 h73.8 a4,4 0 0 1 4,4 v5.0 a4,4 0 0 1 -4,4 h-73.8 z"/>
+<text class="v" x="321.8" y="475.0">4.5%</text>
+<line class="b0" x1="236" y1="70" x2="236" y2="491"/>
+</svg>

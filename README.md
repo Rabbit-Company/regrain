@@ -297,34 +297,17 @@ The computer has an AMD Ryzen 7 7840HS with 8 cores and 16 threads.
 
 The grained encode was decoded with dav1d at full precision, and the grain the decoder added was compared with the grain the denoiser removed. Only flat areas are compared, so that removed detail does not count as grain. The error is the mean difference in grain deviation for every 10 second stretch and brightness level, on a 0 to 255 scale, and the relative error is that difference divided by the removed grain. Lower is better. The scripts are in `scripts/`, see [Testing](#testing).
 
-| Tool                      | Whole episode | Relative error |
-| ------------------------- | ------------- | -------------- |
-| regrain, `--scan full`    | 0.021         | 2.2%           |
-| regrain, `--scan half`    | 0.023         | 2.5%           |
-| regrain, `--scan quarter` | 0.036         | 4.1%           |
-| regrain, `--scan eighth`  | 0.039         | 4.5%           |
-| grav1synth 0.3.8          | 0.080         | 9.4%           |
+![Relative error on the whole episode: regrain 2.2% with --scan full, 2.5% with half, 4.1% with quarter, 4.5% with eighth, grav1synth 0.3.8 9.4%](docs/accuracy-episode.svg)
 
 grav1synth 0.2.0 needs about three hours for the whole episode, so all tools were also compared on two minutes of it, from 10:00 to 12:00:
 
-| Tool                      | 10:00 to 12:00 | Relative error |
-| ------------------------- | -------------- | -------------- |
-| regrain, `--scan full`    | 0.014          | 1.7%           |
-| regrain, `--scan quarter` | 0.025          | 2.7%           |
-| grav1synth 0.3.8          | 0.083          | 14.2%          |
-| grav1synth 0.2.0          | 0.081          | 13.7%          |
+![Relative error from 10:00 to 12:00: regrain 1.7% with --scan full, 2.7% with quarter, grav1synth 0.3.8 14.2%, grav1synth 0.2.0 13.7%](docs/accuracy-stretch.svg)
 
 ### Live action
 
 Five clips from the [Xiph test media](https://media.xiph.org/video/derf/): four from the SVT high definition set, shot on 65 mm film, and one from a digital camera in 4:2:2. Each was denoised with av-denoise NL4D at its defaults and encoded with SVT-AV1 at preset 8 and CRF 28 in 10 bit, or with libaom for the 4:2:2 clip. The clip from the camera was compared on luma only.
 
-| Clip           | Material                                    | regrain, full | regrain, quarter | grav1synth 0.3.8 | grav1synth 0.2.0 |
-| -------------- | ------------------------------------------- | ------------- | ---------------- | ---------------- | ---------------- |
-| crowd_run      | Film, 1080p, 500 frames                     | 1.5%          | 1.7%             | 5.7%             | 6.3%             |
-| old_town_cross | Film, 1080p, 500 frames                     | 1.2%          | 1.1%             | 7.0%             | 6.4%             |
-| park_joy       | Film, almost all foliage, 1080p, 500 frames | 1.2%          | 0.9%             | 2.3%             | 2.3%             |
-| in_to_tree     | Film, native 4K, 100 frames                 | 0.8%          | 0.9%             | 27.4%            | 27.4%            |
-| aspen          | Digital camera, 4:2:2, 1080p, 300 frames    | 0.9%          | 0.9%             | 4.4%             | 4.5%             |
+![Relative error on five live action clips: regrain stays between 0.8% and 1.7%, grav1synth between 2.3% and 27.4%](docs/accuracy-live-action.svg)
 
 On these short clips a full scan ran at 105 to 142 frames per second at 1080p and 33 at 4K, against 49 to 115 and 23 for grav1synth 0.3.8.
 
@@ -332,11 +315,7 @@ On these short clips a full scan ran at 105 to 142 frames per second at 1080p an
 
 Synthetic AV1 grain with known parameters was added to 480 frames of a 1080p 10 bit video, and each tool measured it back.
 
-| Tool             | Error | Relative error |
-| ---------------- | ----- | -------------- |
-| regrain          | 0.014 | 1.0%           |
-| grav1synth 0.3.8 | 0.064 | 5.0%           |
-| grav1synth 0.2.0 | 0.067 | 5.3%           |
+![Relative error on known grain: regrain 1.0%, grav1synth 0.3.8 5.0%, grav1synth 0.2.0 5.3%](docs/accuracy-known.svg)
 
 grav1synth measures 10 bit video after reducing it to 8 bit, which adds rounding noise to what it measures.
 
@@ -346,34 +325,19 @@ The same known grain test was run for every format AV1 allows, on 960x540 video 
 
 Frames of the episode processed per second. Higher is better.
 
-| Tool                      | Frames per second |
-| ------------------------- | ----------------- |
-| grav1synth 0.2.0          | about 3           |
-| grav1synth 0.3.8          | 58                |
-| regrain, `--scan full`    | 155               |
-| regrain, `--scan half`    | 230               |
-| regrain, `--scan quarter` | 326               |
-| regrain, `--scan eighth`  | 405               |
+![Frames per second: grav1synth 0.2.0 3, grav1synth 0.3.8 58, regrain 155 with --scan full, 230 with half, 326 with quarter, 405 with eighth](docs/speed.svg)
 
 For the whole episode, regrain takes 225 seconds with `--scan full` and 86 seconds with `--scan eighth`.
 
 grav1synth 0.2.0 runs on one thread. Its crop filter fails on this video and it cannot read frames 1440 pixels wide, so it was given lossless copies of both videos cut to 1408 pixels. The rate above comes from the first half of the episode, which took 97 minutes. On the two minute stretch it managed 3.3 frames per second.
 
-The table is the same for every thread count. Decoding FFV1 takes most of the CPU time in a full scan.
+The speed is the same for every thread count. Decoding FFV1 takes most of the CPU time in a full scan.
 
 Peak memory was 185 MB for 1080p and 1.2 GB for 4K with 16 threads. Very large frames get fewer workers, so memory stays within about 3 GB.
 
 ### Size
 
-|                                                                 | Added to the 740 MB encode |
-| --------------------------------------------------------------- | -------------------------- |
-| regrain apply, default headers                                  | 0.21 MB                    |
-| regrain apply, `--full-headers`, the way grav1synth writes them | 3.88 MB                    |
-
-| Table            | Entries | Size   |
-| ---------------- | ------- | ------ |
-| regrain          | 1124    | 414 KB |
-| grav1synth 0.3.8 | 2359    | 1.1 MB |
+![Size added to the 740 MB encode: 0.21 MB with default headers, 3.88 MB with --full-headers. Film grain table: regrain 1124 entries and 414 KB, grav1synth 0.3.8 2359 entries and 1.1 MB](docs/size.svg)
 
 ## Testing
 
@@ -383,7 +347,7 @@ Peak memory was 185 MB for 1080p and 1.2 GB for 4K with 16 threads. Very large f
 
 `REGRAIN_FUZZ_DIR=<folder> REGRAIN_FUZZ_ROUNDS=<n> cargo test --release damaged_streams` feeds damaged copies of every IVF file in a folder through the parser and the rewriter. 4.84 million damaged copies of the libaom vectors caused no panic.
 
-`scripts/accuracy.py` produced the accuracy tables above and `scripts/speed.sh` the speed table.
+`scripts/accuracy.py` produced the accuracy numbers above and `scripts/speed.sh` the speed numbers. `scripts/charts.py` draws the charts from them.
 
 ## Limits
 

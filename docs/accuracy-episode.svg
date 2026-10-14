@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="304" viewBox="0 0 800 304" role="img" aria-label="Relative error on the whole episode, lower is better. regrain --scan full 2.2% (0.021), regrain --scan half 2.5% (0.023), regrain --scan quarter 4.1% (0.036), regrain --scan eighth 4.5% (0.039), grav1synth 0.3.8 9.4% (0.080)">
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif}
+.t{fill:#0b0b0b;font-size:15px;font-weight:600}
+.l{fill:#0b0b0b;font-size:14px}
+.n{fill:#52514e;font-size:12px}
+.m{fill:#52514e;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.v{fill:#0b0b0b;font-size:14px;font-weight:600}
+.w{fill:#52514e;font-size:13px;font-weight:400}
+.a{fill:#8a8984;font-size:12px}
+.g{stroke:#e4e3df;stroke-width:1}
+.b0{stroke:#8a8984;stroke-width:1}
+.regrain{fill:#2a78d6}.regrain2{fill:#8bb8ec}.other{fill:#a3a29c}.other2{fill:#d3d2cc}
+@media (prefers-color-scheme:dark){
+.t,.l,.v{fill:#f0efec}.m,.n,.w{fill:#c3c2b7}.a{fill:#8f8e86}
+.g{stroke:#30363d}.b0{stroke:#8f8e86}
+.regrain{fill:#3987e5}.regrain2{fill:#1f5aa6}.other{fill:#8a8984}.other2{fill:#55544f}}
+</style>
+<text class="t" x="16" y="24">Relative error on the whole episode, lower is better</text>
+<text class="n" x="16" y="42">Relative error in bold, then the error on the 0 to 255 scale</text>
+<line class="g" x1="236.0" y1="64" x2="236.0" y2="270"/>
+<text class="a" x="236.0" y="288" text-anchor="middle">0%</text>
+<line class="g" x1="324.8" y1="64" x2="324.8" y2="270"/>
+<text class="a" x="324.8" y="288" text-anchor="middle">2%</text>
+<line class="g" x1="413.6" y1="64" x2="413.6" y2="270"/>
+<text class="a" x="413.6" y="288" text-anchor="middle">4%</text>
+<line class="g" x1="502.4" y1="64" x2="502.4" y2="270"/>
+<text class="a" x="502.4" y="288" text-anchor="middle">6%</text>
+<line class="g" x1="591.2" y1="64" x2="591.2" y2="270"/>
+<text class="a" x="591.2" y="288" text-anchor="middle">8%</text>
+<line class="g" x1="680.0" y1="64" x2="680.0" y2="270"/>
+<text class="a" x="680.0" y="288" text-anchor="middle">10%</text>
+<text class="l" x="222" y="84.0" text-anchor="end">regrain <tspan class="m">--scan full</tspan></text>
+<path class="regrain" d="M236,66.0 h93.7 a4,4 0 0 1 4,4 v18.0 a4,4 0 0 1 -4,4 h-93.7 z"/>
+<text class="v" x="341.7" y="84.0">2.2% <tspan class="w">0.021</tspan></text>
+<text class="l" x="222" y="126.0" text-anchor="end">regrain <tspan class="m">--scan half</tspan></text>
+<path class="regrain" d="M236,108.0 h107.0 a4,4 0 0 1 4,4 v18.0 a4,4 0 0 1 -4,4 h-107.0 z"/>
+<text class="v" x="355.0" y="126.0">2.5% <tspan class="w">0.023</tspan></text>
+<text class="l" x="222" y="168.0" text-anchor="end">regrain <tspan class="m">--scan quarter</tspan></text>
+<path class="regrain" d="M236,150.0 h178.0 a4,4 0 0 1 4,4 v18.0 a4,4 0 0 1 -4,4 h-178.0 z"/>
+<text class="v" x="426.0" y="168.0">4.1% <tspan class="w">0.036</tspan></text>
+<text class="l" x="222" y="210.0" text-anchor="end">regrain <tspan class="m">--scan eighth</tspan></text>
+<path class="regrain" d="M236,192.0 h195.8 a4,4 0 0 1 4,4 v18.0 a4,4 0 0 1 -4,4 h-195.8 z"/>
+<text class="v" x="443.8" y="210.0">4.5% <tspan class="w">0.039</tspan></text>
+<text class="l" x="222" y="252.0" text-anchor="end">grav1synth 0.3.8</text>
+<path class="other" d="M236,234.0 h413.4 a4,4 0 0 1 4,4 v18.0 a4,4 0 0 1 -4,4 h-413.4 z"/>
+<text class="v" x="661.4" y="252.0">9.4% <tspan class="w">0.080</tspan></text>
+<line class="b0" x1="236" y1="64" x2="236" y2="270"/>
+</svg>
