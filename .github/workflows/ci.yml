@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: Check on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install ffmpeg on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: Install ffmpeg on macOS
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - run: cargo fmt --check
+      - run: cargo clippy --release --all-targets -- -D warnings
+      - run: cargo test --release
+
+  conformance:
+    name: AV1 conformance streams
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: cargo build --release
+      - name: Download the libaom test vectors
+        run: |
+          mkdir vectors
+          curl -fsSL "https://aomedia.googlesource.com/aom/+/refs/heads/main/test/test_vectors.cc?format=TEXT" | base64 -d \
+            | grep -oE '"av1-[^"]+"' | tr -d '"' | sort -u > vectors/list.txt
+          while read -r name; do curl -fsS "https://storage.googleapis.com/aom-test-data/$name" -o "vectors/$name"; done < vectors/list.txt
+      - run: scripts/conformance.sh vectors target/release/regrain
+      - name: Fuzz the parser with damaged copies of the vectors
+        run: cargo test --release damaged_streams
+        env:
+          REGRAIN_FUZZ_DIR: vectors
+          REGRAIN_FUZZ_ROUNDS: "2000"

@@ -1,0 +1,20 @@
+[package]
+name = "regrain"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Measure removed film grain and put it back as AV1 film grain synthesis"
+readme = "README.md"
+repository = "https://github.com/Rabbit-Company/regrain"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+clap_complete = "4.6.11"
+clap_mangen = "0.3.3"
+ctrlc = { version = "3.5.2", features = ["termination"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
