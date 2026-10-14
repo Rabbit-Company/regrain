@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.1.3 - 2026-10-14
+
+### Fixes
+
+- Letterbox bars, black frames and other areas without grain in the source got grain in the encode. AV1 gives every brightness below the darkest measured level the grain of that level, so black bars at 16 got the grain of the darkest picture area, as strong as in the picture itself on a test with a grey picture between bars. `diff` now notes the levels where the source is perfectly constant and sets the grain to zero there when they lie outside the measured levels, one level further in to cover encoders that miss black by one level next to the picture. The same holds for constant white. Scenes without such areas give the same tables as 0.1.2.
+
 ## 0.1.2 - 2026-10-14
 
 ### Fixes

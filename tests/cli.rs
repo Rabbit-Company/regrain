@@ -215,6 +215,39 @@ fn diff_measures_added_noise() {
 }
 
 #[test]
+fn diff_leaves_letterbox_bars_without_grain() {
+  let dir = workspace("bars");
+  let clean = path(&dir, "clean.mkv");
+  let noisy = path(&dir, "noisy.mkv");
+  let source = ["-f", "lavfi", "-i", "color=c=0x707070:size=256x128:rate=24", "-frames:v", "30"];
+  let lossless = ["-pix_fmt", "yuv420p10le", "-c:v", "ffv1"];
+  let pad = "format=yuv420p10le,pad=256:192:0:32:black";
+  let noisy_filter = format!("format=yuv420p10le,noise=c0s=6:c0f=t,{pad}");
+  let mut clean_args = source.to_vec();
+  clean_args.extend_from_slice(&["-vf", pad]);
+  clean_args.extend_from_slice(&lossless);
+  clean_args.push(&clean);
+  let mut noisy_args = source.to_vec();
+  noisy_args.extend_from_slice(&["-vf", &noisy_filter]);
+  noisy_args.extend_from_slice(&lossless);
+  noisy_args.push(&noisy);
+  if !ffmpeg(&clean_args) || !ffmpeg(&noisy_args) {
+    eprintln!("skipped: ffmpeg is not available");
+    return;
+  }
+  let table = path(&dir, "bars.tbl");
+  let result = regrain(&["diff", &noisy, &clean, "-o", &table, "-q", "--no-chroma"]);
+  assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+  let text = std::fs::read_to_string(&table).unwrap();
+  let luma = text.lines().find(|line| line.trim_start().starts_with("sY")).unwrap();
+  let values: Vec<u32> = luma.split_whitespace().skip(1).map(|value| value.parse().unwrap()).collect();
+  // Black is 16 on the 0 to 255 scale, the grain is cut one level above it.
+  assert_eq!(&values[..5], &[3, 17, 0, 18, values[6]], "{luma}");
+  assert!(values[4] > 0, "{luma}");
+  let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn diff_seeks_to_matching_frames_when_the_video_starts_late() {
   let dir = workspace("late");
   let clean = path(&dir, "clean.mkv");

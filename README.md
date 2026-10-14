@@ -155,7 +155,7 @@ The table is the same for every thread count.
 7. regrain then builds the grain the way an AV1 decoder does and measures it, and sets the scaling values so the decoder output has the measured strength.
 8. Neighbouring scenes with the same grain share one table entry.
 
-Blocks where the source is perfectly constant, such as letterbox bars, are ignored.
+Blocks where the source is perfectly constant, such as letterbox bars, are not measured. An AV1 decoder gives every brightness below the darkest scaling point the grain of that point, so when such blocks are darker than everything measured, the grain is set to zero at their level and one level above it, and comes back in full one level further up. Constant blocks brighter than everything measured are handled the same way. Bars and black frames then stay clean.
 
 ## apply
 

@@ -86,6 +86,8 @@ impl Layout {
 #[derive(Clone, Debug)]
 pub struct PlaneStats {
   pub histogram: Vec<u32>,
+  // Blocks without any grain in the source, such as letterbox bars, by luma level.
+  pub constant: Vec<u32>,
   pub correlation: [f64; LAGS],
   pub weight: f64,
   pub cross: [f64; CROSS],
@@ -98,6 +100,7 @@ impl Default for PlaneStats {
   fn default() -> Self {
     Self {
       histogram: vec![0; BINS * BUCKETS],
+      constant: vec![0; 256],
       correlation: [0.0; LAGS],
       weight: 0.0,
       cross: [0.0; CROSS],
@@ -113,6 +116,9 @@ impl PlaneStats {
     for &slot in &other.observations {
       self.histogram[slot as usize] += 1;
     }
+    for &level in &other.constant {
+      self.constant[level as usize] += 1;
+    }
     self.blocks += other.observations.len() as u64;
     for i in 0..LAGS {
       self.correlation[i] += other.correlation[i];
@@ -127,6 +133,9 @@ impl PlaneStats {
 
   pub fn merge(&mut self, other: &PlaneStats) {
     for (a, b) in self.histogram.iter_mut().zip(&other.histogram) {
+      *a += b;
+    }
+    for (a, b) in self.constant.iter_mut().zip(&other.constant) {
       *a += b;
     }
     for i in 0..LAGS {
@@ -145,6 +154,7 @@ impl PlaneStats {
 #[derive(Clone, Debug)]
 pub struct PlaneFrame {
   pub observations: Vec<u16>,
+  pub constant: Vec<u8>,
   pub correlation: [f64; LAGS],
   pub weight: f64,
   pub cross: [f64; CROSS],
@@ -156,6 +166,7 @@ impl Default for PlaneFrame {
   fn default() -> Self {
     Self {
       observations: Vec::new(),
+      constant: Vec::new(),
       correlation: [0.0; LAGS],
       weight: 0.0,
       cross: [0.0; CROSS],
@@ -196,6 +207,7 @@ pub struct Scratch {
   luma_residual: Vec<i16>,
   luma_bins: Vec<u8>,
   luma_flat: Vec<u8>,
+  luma_constant: Vec<bool>,
   loose: Vec<PlaneFrame>,
   block: Vec<i16>,
   partner: Vec<i16>,
@@ -367,6 +379,7 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
   }
   scratch.luma_bins.resize(grid_w * grid_h, 0);
   scratch.luma_flat.resize(grid_w * grid_h, 0);
+  scratch.luma_constant.resize(grid_w * grid_h, false);
   scratch.block.resize(BLOCK * BLOCK, 0);
   scratch.partner.resize(BLOCK * BLOCK, 0);
 
@@ -419,6 +432,13 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
       for bx in 0..grid_w {
         let cell = by * grid_w + bx;
         let info = &scratch.infos[cell];
+        if plane == 0 {
+          scratch.luma_constant[cell] = info.constant_source;
+        }
+        // AV1 scales chroma grain by luma as well, so both planes have to be free of grain.
+        if info.constant_source && scratch.luma_constant[cell] {
+          strict.constant.push(result.source_thumbnail[cell]);
+        }
         let mut flatness = match info.texture {
           _ if info.constant_source => 0,
           texture if texture <= strict_limit => 2,

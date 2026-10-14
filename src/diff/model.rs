@@ -319,11 +319,21 @@ fn choose_lag(stats: &PlaneStats, with_luma: bool) -> i32 {
     .unwrap_or(3)
 }
 
-fn scaling_points(curve: &Curve, scale: f64, max_points: usize) -> Vec<[u8; 2]> {
+// AV1 holds the first and last scaling values for every level beyond them. Where the
+// source has no grain at such a level, such as letterbox bars, the grain is cut to zero
+// there. The cut reaches one level further in, since encoders often miss flat areas by
+// one level next to the picture, and the grain comes back in full one level after that.
+fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32]) -> Vec<[u8; 2]> {
   let mut points: Vec<(f64, f64)> = (0..BINS)
     .filter(|&bin| curve.counts[bin] >= MIN_BIN_BLOCKS)
     .map(|bin| ((bin * 256 / BINS + 128 / BINS) as f64, (curve.sigma[bin] * scale).min(255.0)))
     .collect();
+  let (first, last) = (points[0].0 as usize, points[points.len() - 1].0 as usize);
+  let blank = |level: &usize| constant[*level] as u64 >= MIN_BIN_BLOCKS;
+  let below = (0..first).rev().find(blank).map(|level| (level + 1).min(first - 1));
+  let above = (last + 1..256).find(blank).map(|level| (level - 1).max(last + 1));
+  let reserved = below.map_or(0, |level| 1 + usize::from(level + 1 < first)) + above.map_or(0, |level| 1 + usize::from(level - 1 > last));
+  let max_points = max_points.saturating_sub(reserved).max(1);
   let reference = points.clone();
   let evaluate = |points: &[(f64, f64)], x: f64| -> f64 {
     if x <= points[0].0 {
@@ -352,6 +362,20 @@ fn scaling_points(curve: &Curve, scale: f64, max_points: usize) -> Vec<[u8; 2]> 
       break;
     }
     points.remove(remove);
+  }
+  if let Some(level) = below {
+    let edge = (level as f64 + 1.0, points[0].1);
+    if edge.0 < points[0].0 {
+      points.insert(0, edge);
+    }
+    points.insert(0, (level as f64, 0.0));
+  }
+  if let Some(level) = above {
+    let edge = (level as f64 - 1.0, points[points.len() - 1].1);
+    if edge.0 > points[points.len() - 1].0 {
+      points.push(edge);
+    }
+    points.push((level as f64, 0.0));
   }
   points.iter().map(|&(x, y)| [x as u8, y.round().clamp(0.0, 255.0) as u8]).collect()
 }
@@ -492,15 +516,15 @@ pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8) -> Fit {
   params.scaling_shift = scaling_shift;
   let unit = (1u32 << scaling_shift) as f64;
   params.scaling_points_y = if luma_active {
-    scaling_points(&curves[0], unit / stds[0], MAX_LUMA_POINTS)
+    scaling_points(&curves[0], unit / stds[0], MAX_LUMA_POINTS, &planes[0].constant)
   } else {
     Vec::new()
   };
   if actives[1] {
-    params.scaling_points_cb = scaling_points(&curves[1], unit / stds[1], MAX_CHROMA_POINTS);
+    params.scaling_points_cb = scaling_points(&curves[1], unit / stds[1], MAX_CHROMA_POINTS, &planes[1].constant);
   }
   if actives[2] {
-    params.scaling_points_cr = scaling_points(&curves[2], unit / stds[2], MAX_CHROMA_POINTS);
+    params.scaling_points_cr = scaling_points(&curves[2], unit / stds[2], MAX_CHROMA_POINTS, &planes[2].constant);
   }
   for points in [
     &mut params.scaling_points_y,
@@ -568,7 +592,7 @@ mod tests {
     for bin in 0..BINS {
       curve.sigma[bin] = 2.0 + ((bin as f64) * 0.9).sin();
     }
-    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS);
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &[0; 256]);
     assert!(points.len() <= MAX_LUMA_POINTS && points.len() >= 4);
     assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]));
     let flat = Curve {
@@ -576,8 +600,41 @@ mod tests {
       counts: [100; BINS],
       active: true,
     };
-    let points = scaling_points(&flat, 16.0, MAX_LUMA_POINTS);
+    let points = scaling_points(&flat, 16.0, MAX_LUMA_POINTS, &[0; 256]);
     assert_eq!(points.len(), 1);
     assert_eq!(points[0][1], 24);
+  }
+
+  #[test]
+  fn cuts_grain_where_the_source_has_none() {
+    let mut curve = Curve {
+      sigma: [0.0; BINS],
+      counts: [0; BINS],
+      active: true,
+    };
+    for bin in 6..26 {
+      curve.sigma[bin] = 2.0 + ((bin as f64) * 0.9).sin();
+      curve.counts[bin] = 100;
+    }
+    let mut constant = [0u32; 256];
+    constant[16] = 500;
+    constant[128] = 500;
+    constant[235] = 500;
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant);
+    assert!(points.len() <= MAX_LUMA_POINTS, "{points:?}");
+    assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]), "{points:?}");
+    assert_eq!(points[0], [17, 0]);
+    assert_eq!(points[1][0], 18);
+    assert_eq!(points[1][1], points[2][1]);
+    let n = points.len();
+    assert_eq!(points[n - 1], [234, 0]);
+    assert_eq!(points[n - 2][0], 233);
+    assert_eq!(points[n - 2][1], points[n - 3][1]);
+    // A level inside the measured range keeps its measured grain.
+    assert!(points[1..n - 1].iter().all(|point| point[1] > 0));
+
+    constant[235] = MIN_BIN_BLOCKS as u32 - 1;
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant);
+    assert_ne!(points[points.len() - 1][1], 0);
   }
 }
