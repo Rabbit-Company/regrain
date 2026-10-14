@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.1.1 - 2026-10-14
+
+### Fixes
+
+- `diff --no-chroma` measured luma grain too strong, by 20% to 35% on the test material, because ffmpeg stretched luma to full range while converting to gray. Videos are now decoded in their own format and regrain keeps only the luma, so `--no-chroma` measures the same luma as a run with chroma. Results are also the same whether the denoised video comes from a file or from standard input. Runs without `--no-chroma` give the same tables as 0.1.0.
+
 ## 0.1.0 - 2026-10-14
 
 First release.

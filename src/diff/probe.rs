@@ -421,7 +421,8 @@ mod tests {
   #[test]
   fn reads_clock_durations() {
     assert_eq!(parse_clock("00:23:51.013000000"), Some(1431.013));
-    assert_eq!(ffprobe_path("/opt/ffmpeg/bin/ffmpeg"), "/opt/ffmpeg/bin/ffprobe");
+    let expected = Path::new("/opt/ffmpeg/bin").join("ffprobe");
+    assert_eq!(ffprobe_path("/opt/ffmpeg/bin/ffmpeg"), expected.to_string_lossy());
     assert_eq!(ffprobe_path("custom"), "ffprobe");
   }
 }

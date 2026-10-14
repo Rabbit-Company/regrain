@@ -429,7 +429,8 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
       ),
     ));
   }
-  let mut format = PixelFormat::parse(&denoised_info.pix_fmt).code("unsupported_input")?;
+  let stream_format = PixelFormat::parse(&denoised_info.pix_fmt).code("unsupported_input")?;
+  let mut format = stream_format;
   if !options.chroma {
     format.mono = true;
   }
@@ -479,30 +480,27 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
   let per_worker = layout.frame_samples() * bytes_per_sample * 2 + layout.width * layout.height * 2 + (16 << 20);
   let workers = options.threads.min(MEMORY_BUDGET / per_worker).clamp(1, chunks.len());
   let decode_threads = (options.threads / workers).max(1);
+  let stream_layout = Layout {
+    format: stream_format,
+    ..layout
+  };
   let spec = |path: &PathBuf, crop: Option<String>, intra_only: bool| StreamSpec {
     path: path.clone(),
     ffmpeg: options.ffmpeg.clone(),
-    format,
+    format: stream_format,
     crop,
     intra_only,
     fps,
     start_seconds: options.start,
     threads: decode_threads,
-    y4m_frame_bytes: None,
+    frame_bytes: stream_layout.frame_samples() * bytes_per_sample,
+    stdin: false,
   };
   let mut specs = [
     spec(&options.source, options.crop.clone(), source_info.is_intra_only() && !from_stdin),
     spec(&options.denoised, None, denoised_info.is_intra_only()),
   ];
-  if from_stdin {
-    let stream_format = PixelFormat::parse(&denoised_info.pix_fmt)?;
-    let stream_layout = Layout {
-      width: layout.width,
-      height: layout.height,
-      format: stream_format,
-    };
-    specs[1].y4m_frame_bytes = Some(stream_layout.frame_samples() * bytes_per_sample);
-  }
+  specs[1].stdin = from_stdin;
   let expected = frames.map(|total| {
     chunks
       .iter()

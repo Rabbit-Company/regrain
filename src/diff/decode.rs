@@ -15,8 +15,8 @@ pub struct StreamSpec {
   pub fps: f64,
   pub start_seconds: f64,
   pub threads: usize,
-  // Bytes of one frame as it arrives on standard input, for y4m read from there.
-  pub y4m_frame_bytes: Option<usize>,
+  pub frame_bytes: usize,
+  pub stdin: bool,
 }
 
 // A stretch of frames, of which the first `window` of every `period` are read.
@@ -154,8 +154,8 @@ impl ChunkDecoder {
     Ok(true)
   }
 
-  // Reads the next y4m frame from standard input, skipping frames a sampled scan leaves out.
-  fn next_y4m_frame(&mut self, buffer: &mut [u8], stream_bytes: usize) -> Result<bool> {
+  fn next_y4m_frame(&mut self, buffer: &mut [u8]) -> Result<bool> {
+    let stream_bytes = self.spec.frame_bytes;
     let target = self.chunk.frame_index(self.delivered);
     if self.chunk.frames.is_some_and(|frames| target >= self.chunk.start + frames) {
       return Ok(false);
@@ -194,9 +194,10 @@ impl ChunkDecoder {
   }
 
   pub fn next_frame(&mut self, buffer: &mut [u8]) -> Result<bool> {
-    if let Some(stream_bytes) = self.spec.y4m_frame_bytes {
-      return self.next_y4m_frame(buffer, stream_bytes);
+    if self.spec.stdin {
+      return self.next_y4m_frame(buffer);
     }
+    let stream_bytes = self.spec.frame_bytes;
     loop {
       if self.finished {
         return Ok(false);
@@ -210,15 +211,25 @@ impl ChunkDecoder {
         continue;
       }
       let (_, stdout) = self.child.as_mut().unwrap();
+      let into: &mut [u8] = if stream_bytes == buffer.len() {
+        buffer
+      } else {
+        self.spare.resize(stream_bytes, 0);
+        &mut self.spare
+      };
       let mut filled = 0;
-      while filled < buffer.len() {
-        let read = stdout.read(&mut buffer[filled..]).context("failed to read decoded video")?;
+      while filled < into.len() {
+        let read = stdout.read(&mut into[filled..]).context("failed to read decoded video")?;
         if read == 0 {
           break;
         }
         filled += read;
       }
-      if filled == buffer.len() {
+      if filled == stream_bytes {
+        if stream_bytes != buffer.len() {
+          let length = buffer.len();
+          buffer.copy_from_slice(&self.spare[..length]);
+        }
         if let Some(left) = self.left_in_child.as_mut() {
           *left -= 1;
         }

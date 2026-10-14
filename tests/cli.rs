@@ -152,6 +152,12 @@ fn diff_measures_added_noise() {
   let values: Vec<u32> = luma.split_whitespace().skip(1).map(|value| value.parse().unwrap()).collect();
   assert!(values[0] >= 1 && values[2] > 0, "{luma}");
 
+  let with_chroma = path(&dir, "chroma.tbl");
+  assert!(regrain(&["diff", &noisy, &clean, "-o", &with_chroma, "-q"]).status.success());
+  let chroma_text = std::fs::read_to_string(&with_chroma).unwrap();
+  let chroma_luma = chroma_text.lines().find(|line| line.trim_start().starts_with("sY")).unwrap();
+  assert_eq!(luma, chroma_luma, "--no-chroma must measure the same luma");
+
   let y4m = path(&dir, "clean.y4m");
   assert!(ffmpeg(&["-i", &clean, "-strict", "-1", "-f", "yuv4mpegpipe", &y4m]));
   let piped_table = path(&dir, "piped.tbl");
