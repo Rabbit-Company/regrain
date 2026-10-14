@@ -215,6 +215,48 @@ fn diff_measures_added_noise() {
 }
 
 #[test]
+fn diff_seeks_to_matching_frames_when_the_video_starts_late() {
+  let dir = workspace("late");
+  let clean = path(&dir, "clean.mkv");
+  let late = path(&dir, "late.mkv");
+  let video = ["-f", "lavfi", "-i", "testsrc2=size=256x192:rate=24", "-frames:v", "480"];
+  let mut clean_args = video.to_vec();
+  clean_args.extend_from_slice(&["-pix_fmt", "yuv420p", "-c:v", "ffv1", &clean]);
+  // Remuxes often hold audio from the start and the first video frame a few frames later.
+  let late_args = [
+    "-itsoffset",
+    "0.125",
+    "-i",
+    &clean,
+    "-f",
+    "lavfi",
+    "-i",
+    "sine=sample_rate=48000:duration=20",
+    "-map",
+    "0:v",
+    "-map",
+    "1:a",
+    "-vf",
+    "noise=c0s=6:c0f=t",
+    "-c:v",
+    "ffv1",
+    "-c:a",
+    "flac",
+    &late,
+  ];
+  if !ffmpeg(&clean_args) || !ffmpeg(&late_args) {
+    eprintln!("skipped: ffmpeg is not available");
+    return;
+  }
+  let table = path(&dir, "late.tbl");
+  let result = regrain(&["diff", &late, &clean, "-o", &table, "--progress", "json", "--threads", "4"]);
+  let stdout = String::from_utf8_lossy(&result.stdout);
+  assert!(result.status.success(), "{stdout}");
+  assert!(stdout.contains("\"mismatched_frames\":0,"), "{stdout}");
+  let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn matroska_output_keeps_tracks_interleaved() {
   let dir = workspace("interleave");
   let clean = path(&dir, "clean.mkv");

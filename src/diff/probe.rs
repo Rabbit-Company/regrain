@@ -79,6 +79,7 @@ pub struct VideoInfo {
   pub frames: Option<u64>,
   pub duration: Option<f64>,
   pub average_fps: Option<f64>,
+  pub seek_offset: f64,
 }
 
 impl VideoInfo {
@@ -221,6 +222,7 @@ fn parse_y4m_header(line: &str) -> Result<VideoInfo> {
     frames: None,
     duration: None,
     average_fps: None,
+    seek_offset: 0.0,
   };
   for field in fields {
     let (tag, value) = field.split_at(field.len().min(1));
@@ -265,7 +267,7 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
   }
   let output = Command::new(ffprobe)
         .args(["-v", "error", "-select_streams", "V:0", "-show_entries"])
-        .arg("stream=codec_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_frames,duration:stream_tags=NUMBER_OF_FRAMES,DURATION:format=duration")
+        .arg("stream=codec_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_frames,duration,start_time:stream_tags=NUMBER_OF_FRAMES,DURATION:format=duration,start_time")
         .args(["-of", "default=nw=1"])
         .arg(path)
         .output()
@@ -282,6 +284,8 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
     ));
   }
   let text = String::from_utf8_lossy(&output.stdout);
+  // The stream start time is printed before the format start time.
+  let mut start_times = Vec::new();
   let mut info = VideoInfo {
     width: 0,
     height: 0,
@@ -292,6 +296,7 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
     frames: None,
     duration: None,
     average_fps: None,
+    seek_offset: 0.0,
   };
   for line in text.lines() {
     let Some((key, value)) = line.split_once('=') else { continue };
@@ -326,8 +331,12 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
       "TAG:DURATION" if info.duration.is_none() => {
         info.duration = parse_clock(value).filter(|&seconds| seconds > 0.0);
       }
+      "start_time" => start_times.push(value.parse::<f64>().ok()),
       _ => {}
     }
+  }
+  if let [Some(stream), Some(format)] = start_times[..] {
+    info.seek_offset = (stream - format).max(0.0);
   }
   if info.width == 0 || info.height == 0 || info.fps_num == 0 {
     return Err(fail("unsupported_input", format!("no video stream found in {}", path.display())));
@@ -371,6 +380,7 @@ mod tests {
       frames: Some(34896),
       duration: Some(120.0),
       average_fps: Some(23.976),
+      seek_offset: 0.0,
     };
     assert!(!info.is_variable_frame_rate());
     info.average_fps = Some(23.5);

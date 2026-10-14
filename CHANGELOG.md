@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.1.2 - 2026-10-14
+
+### Fixes
+
+- `diff` compared the wrong frames when the source video starts later than its container, which is common in Blu-ray remuxes whose audio starts first. Every chunk after the first was read a few frames early in the source, so grain was measured on frames that did not match. Often this ended with `misaligned` partway through the video, even though both videos were in step. Seeks now count from the first frame of the video, so every chunk starts on the frame it should. Videos whose video track starts with the container give the same tables as 0.1.1.
+
 ## 0.1.1 - 2026-10-14
 
 ### Fixes

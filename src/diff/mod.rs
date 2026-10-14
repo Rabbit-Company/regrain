@@ -484,7 +484,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     format: stream_format,
     ..layout
   };
-  let spec = |path: &PathBuf, crop: Option<String>, intra_only: bool| StreamSpec {
+  let spec = |path: &PathBuf, crop: Option<String>, intra_only: bool, seek_offset: f64| StreamSpec {
     path: path.clone(),
     ffmpeg: options.ffmpeg.clone(),
     format: stream_format,
@@ -492,13 +492,19 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     intra_only,
     fps,
     start_seconds: options.start,
+    seek_offset,
     threads: decode_threads,
     frame_bytes: stream_layout.frame_samples() * bytes_per_sample,
     stdin: false,
   };
   let mut specs = [
-    spec(&options.source, options.crop.clone(), source_info.is_intra_only() && !from_stdin),
-    spec(&options.denoised, None, denoised_info.is_intra_only()),
+    spec(
+      &options.source,
+      options.crop.clone(),
+      source_info.is_intra_only() && !from_stdin,
+      source_info.seek_offset,
+    ),
+    spec(&options.denoised, None, denoised_info.is_intra_only(), denoised_info.seek_offset),
   ];
   specs[1].stdin = from_stdin;
   let expected = frames.map(|total| {

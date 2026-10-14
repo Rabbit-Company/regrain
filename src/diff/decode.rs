@@ -14,6 +14,7 @@ pub struct StreamSpec {
   pub intra_only: bool,
   pub fps: f64,
   pub start_seconds: f64,
+  pub seek_offset: f64,
   pub threads: usize,
   pub frame_bytes: usize,
   pub stdin: bool,
@@ -83,6 +84,7 @@ impl ChunkDecoder {
     command.args(["-v", "error", "-nostdin", "-threads", &spec.threads.to_string()]);
     let seek = spec.start_seconds + if start > 0 { (start as f64 - 0.5) / spec.fps } else { 0.0 };
     if seek > 0.0 {
+      let seek = seek + spec.seek_offset;
       command.args(["-ss", &format!("{seek:.6}")]);
     }
     command.arg("-i").arg(&spec.path).args(["-map", "0:V:0", "-an", "-sn", "-dn"]);
