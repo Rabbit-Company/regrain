@@ -139,6 +139,7 @@ pub struct ApplyOptions<'a> {
   pub ffmpeg: &'a str,
   pub fps: Option<(u32, u32)>,
   pub compact: bool,
+  pub static_grain: bool,
   pub verify: bool,
 }
 
@@ -237,9 +238,13 @@ fn verify(path: &Path, input: &Path, table: Option<&GrainTable>, ffmpeg: &str, f
   Ok(())
 }
 
-// Every frame needs its own seed or the grain pattern stands still. The first
-// frame of a segment keeps the table's seed, so an exported table matches.
-fn frame_seed(segment: &Segment, ticks: u64) -> u16 {
+// Every frame needs its own seed or the grain pattern stands still, unless a
+// still pattern is what was asked for. The first frame of a segment keeps the
+// table's seed, so an exported table matches.
+fn frame_seed(segment: &Segment, ticks: u64, static_grain: bool) -> u16 {
+  if static_grain {
+    return segment.seed;
+  }
   let milliseconds = (ticks.saturating_sub(segment.start) + 5_000) / 10_000;
   (segment.seed as u64).wrapping_add(milliseconds.wrapping_mul(40503)) as u16
 }
@@ -248,6 +253,7 @@ struct Rewriter<'a> {
   table: Option<&'a GrainTable>,
   display: Vec<Option<u64>>,
   compact: bool,
+  static_grain: bool,
   normalized: Vec<Option<GrainParams>>,
   format: Option<ChromaFormat>,
   slot_segment: [Option<usize>; NUM_REF_FRAMES],
@@ -257,11 +263,12 @@ struct Rewriter<'a> {
 }
 
 impl<'a> Rewriter<'a> {
-  fn new(table: Option<&'a GrainTable>, display: Vec<Option<u64>>, compact: bool) -> Self {
+  fn new(table: Option<&'a GrainTable>, display: Vec<Option<u64>>, compact: bool, static_grain: bool) -> Self {
     Rewriter {
       table,
       display,
       compact,
+      static_grain,
       normalized: Vec::new(),
       format: None,
       slot_segment: [None; NUM_REF_FRAMES],
@@ -301,7 +308,7 @@ impl<'a> Rewriter<'a> {
           let table = self.table.unwrap();
           w.bit(true);
           let ticks = self.display.get(self.index).copied().flatten().unwrap_or(0);
-          w.bits(frame_seed(&table.segments[segment], ticks) as u32, 16);
+          w.bits(frame_seed(&table.segments[segment], ticks, self.static_grain) as u32, 16);
           let reference = if self.compact && header.is_inter() {
             header
               .ref_frame_idx
@@ -389,7 +396,7 @@ pub fn apply(input_path: &Path, output_path: &Path, table: Option<&GrainTable>, 
   let scan = scan(input_path, options.ffmpeg, options.fps)?;
   let frames_shown = scan.shown.len();
   let frames = scan.display.len();
-  let mut rewriter = Rewriter::new(table, scan.display.clone(), options.compact);
+  let mut rewriter = Rewriter::new(table, scan.display.clone(), options.compact, options.static_grain);
   let mut input = Input::open(input_path, options.ffmpeg, options.fps)?;
   let fps = (input.reader.rate, input.reader.scale);
   let mut output = Output::create(output_path, input_path, &input.reader, options.ffmpeg)?;
@@ -449,13 +456,22 @@ mod tests {
     let Ok(mut reader) = VideoReader::open(Box::new(Cursor::new(data.to_vec())), None) else {
       return;
     };
-    let mut rewriter = Rewriter::new(Some(table), scan.display, true);
+    let mut rewriter = Rewriter::new(Some(table), scan.display, true, false);
     let mut parser = StreamParser::new();
     while let Ok(Some(packet)) = reader.next_packet() {
       if rewriter.packet(&mut parser, &packet.data).is_err() {
         break;
       }
     }
+  }
+
+  #[test]
+  fn static_grain_keeps_the_entry_seed() {
+    let table = GrainTable::parse(TABLE).unwrap();
+    let segment = &table.segments[0];
+    assert_eq!(frame_seed(segment, 0, false), 100);
+    assert_ne!(frame_seed(segment, 417_083, false), 100);
+    assert_eq!(frame_seed(segment, 417_083, true), 100);
   }
 
   struct Rng(u64);

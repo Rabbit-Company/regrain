@@ -53,6 +53,9 @@ enum Command {
     /// Write every frame's parameters in full instead of pointing at a reference frame
     #[arg(long)]
     full_headers: bool,
+    /// Give every frame of a table entry the entry's seed, so the grain pattern stands still
+    #[arg(long)]
+    static_grain: bool,
     /// Read the output back and decode it with dav1d before keeping it
     #[arg(long)]
     verify: bool,
@@ -277,6 +280,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       output,
       table,
       full_headers,
+      static_grain,
       verify,
       overwrite,
       ffmpeg,
@@ -288,6 +292,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         ffmpeg: &ffmpeg,
         fps,
         compact: !full_headers,
+        static_grain,
         verify,
       };
       let report = stream::apply(&input, &output, Some(&table), &options)?;
@@ -613,6 +618,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         ffmpeg: &ffmpeg,
         fps,
         compact: false,
+        static_grain: false,
         verify,
       };
       let report = stream::apply(&input, &output, None, &options)?;

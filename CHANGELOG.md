@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.2.2 - 2026-10-15
+
+### Features
+
+- `apply --static-grain` gives every frame of a table entry the entry's seed instead of a new seed per frame, so the grain pattern stands still.
+
 ## 0.2.1 - 2026-10-15
 
 ### Fixes

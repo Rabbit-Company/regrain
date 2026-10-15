@@ -54,8 +54,8 @@ A build that is too new for the CPU crashes with an illegal instruction error an
 On Linux and macOS:
 
 ```sh
-tar -xzf regrain-v0.2.1-linux-x86_64-v3.tar.gz
-sudo install regrain-v0.2.1-linux-x86_64-v3/regrain /usr/local/bin/
+tar -xzf regrain-v0.2.2-linux-x86_64-v3.tar.gz
+sudo install regrain-v0.2.2-linux-x86_64-v3/regrain /usr/local/bin/
 ```
 
 The macOS binaries are not signed. If macOS refuses to open it, clear the quarantine flag once:
@@ -176,6 +176,7 @@ regrain apply <INPUT> -o <OUTPUT> --table <TABLE>
 | Option            | Meaning                                                                                           |
 | ----------------- | ------------------------------------------------------------------------------------------------- |
 | `--full-headers`  | Write every frame's parameters in full instead of pointing at a reference frame                   |
+| `--static-grain`  | Give every frame of a table entry the entry's seed, so the grain pattern stands still             |
 | `--verify`        | Read the output back and decode it with dav1d before keeping it                                   |
 | `--fps <RATE>`    | Frame rate for streams without timestamps, such as OBU and Annex B files, as `24000/1001` or `25` |
 | `-y, --overwrite` | Replace an existing output file                                                                   |
@@ -193,6 +194,8 @@ An empty table gives the input without grain, the same as `remove`.
 Only frame headers are rewritten. The picture data is copied, so the step takes about a second per episode. Grain that is already in the video is replaced.
 
 Frames between table entries, and frames after the last entry when it has an end time, get no grain. A frame that is decoded early and shown later gets the entry of the time it is shown.
+
+Each frame gets its own seed, derived from the table entry's seed and the frame's time, so the grain moves like film grain. The first frame of an entry keeps the entry's seed. With `--static-grain` every frame uses the entry's seed as written in the table, so the decoder lays the same pattern over every frame of the entry, like a texture on the screen. The pattern still changes where the next entry starts, unless both entries have the same seed. This suits light grain on footage that mostly stands still, such as grain that only hides banding in anime. Where the camera pans, the pattern stays in place while the picture moves under it, and on large flat areas the repetition in how AV1 builds grain from one small pattern can show. Scenes that `diff` splits into many short entries, such as flashing lights, get a new pattern with every entry.
 
 By default a frame that uses the same parameters as one of its reference frames stores only a new seed and a pointer to that frame. This is standard AV1 and decodes to the same picture as full headers, with a fraction of the size.
 
