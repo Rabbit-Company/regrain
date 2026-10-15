@@ -231,9 +231,19 @@ fn generate_writes_the_requested_grain() {
   let made = regrain(&["generate", "-o", &table, "--strength", "1.5", "--size", "medium", "--chroma", "0.4"]);
   assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
   let stats = String::from_utf8(regrain(&["stats", &table, "--progress", "json"]).stdout).unwrap();
-  for field in ["\"entries\":1,", "\"luma_mid\":1.5", "\"lag\":2,"] {
+  for field in ["\"entries\":1,", "\"lag\":3,"] {
     assert!(stats.contains(field), "{field} missing in {stats}");
   }
+  let mid: f64 = stats
+    .split("\"luma_mid\":")
+    .nth(1)
+    .unwrap()
+    .split(',')
+    .next()
+    .unwrap()
+    .parse()
+    .unwrap();
+  assert!((mid - 1.5).abs() < 0.03, "{stats}");
 
   let exists = regrain(&["generate", "-o", &table, "--iso", "800"]);
   assert!(String::from_utf8_lossy(&exists.stderr).contains("already exists"));

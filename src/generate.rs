@@ -1,4 +1,4 @@
-use crate::diff::analyze::ar_offsets;
+use crate::diff::model::ar_for_correlation;
 use crate::diff::synth::{TemplateStats, simulate};
 use crate::grain::{GrainParams, MAX_LUMA_POINTS};
 use crate::report::fail;
@@ -39,7 +39,7 @@ pub struct GenerateOptions {
   pub chroma: f64,
 }
 
-const LAG: u8 = 2;
+const LAG: u8 = 3;
 const DEPTH: u8 = 10;
 
 // Grain deviation on the 0 to 255 scale at limited range luma levels.
@@ -94,29 +94,26 @@ fn photon_noise(iso: u32, width: u32, height: u32) -> Vec<(u8, f64)> {
     .collect()
 }
 
-// Autoregression that gives the grain the neighbour correlation of its size. The taps
-// fall off with distance, and their sum is searched until the template matches.
+// Autoregression for round grain clumps: the coefficients are fitted to a correlation
+// that falls off exponentially with distance, the same way in every direction, and the width of that
+// fall-off is searched until the template has the neighbour correlation of the size.
+// Weighting the causal taps directly would smear the clumps along a diagonal.
 fn ar_coefficients(size: Size) -> (Vec<f64>, u8) {
-  let offsets = ar_offsets(LAG as i32);
   let target = size.correlation();
   if target == 0.0 {
     return (Vec::new(), 0);
   }
-  let shape: Vec<f64> = offsets
-    .iter()
-    .map(|&(dx, dy)| (-((dx * dx + dy * dy) as f64) / 2.0).exp())
-    .collect();
-  let total: f64 = shape.iter().sum();
-  let (mut low, mut high) = (0.0, 0.95);
+  let fit = |width: f64| ar_for_correlation(|dx, dy| (-((dx * dx + dy * dy) as f64).sqrt() / width).exp(), LAG as i32);
+  let (mut low, mut high) = (0.2, 6.0);
   let mut coeffs = Vec::new();
   for _ in 0..24 {
-    let sum = (low + high) / 2.0;
-    coeffs = shape.iter().map(|&weight| weight * sum / total).collect();
+    let width = (low + high) / 2.0;
+    coeffs = fit(width);
     let template = template_for(&coeffs, LAG, [false, false]);
     if (template.luma_rho[0] + template.luma_rho[1]) / 2.0 < target {
-      low = sum;
+      low = width;
     } else {
-      high = sum;
+      high = width;
     }
   }
   (coeffs, LAG)

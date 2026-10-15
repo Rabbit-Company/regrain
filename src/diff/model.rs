@@ -255,6 +255,25 @@ struct ArFit {
   error: f64,
 }
 
+pub fn ar_for_correlation(rho: impl Fn(i32, i32) -> f64, lag: i32) -> Vec<f64> {
+  let mut stats = PlaneStats {
+    weight: 1.0,
+    ..PlaneStats::default()
+  };
+  for dy in 0..=3 {
+    for dx in -6..=6 {
+      if dy > 0 || dx >= 0 {
+        stats.correlation[lag_index(dx, dy)] = rho(dx, dy);
+      }
+    }
+  }
+  stats.weight = MIN_CORRELATION_WEIGHT;
+  for value in &mut stats.correlation {
+    *value *= MIN_CORRELATION_WEIGHT;
+  }
+  fit_ar(&stats, lag, false).coeffs
+}
+
 fn fit_ar(stats: &PlaneStats, lag: i32, with_luma: bool) -> ArFit {
   let white = ArFit {
     coeffs: vec![0.0; ar_offsets(lag).len()],
