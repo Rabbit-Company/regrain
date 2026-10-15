@@ -2,7 +2,7 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
-## Unreleased
+## 0.2.0 - 2026-10-15
 
 ### Features
 
