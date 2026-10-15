@@ -5,6 +5,7 @@ regrain measures the film grain a denoiser removed from a video and puts it back
 | Command       | What it does                                                                        |
 | ------------- | ----------------------------------------------------------------------------------- |
 | `diff`        | Compares the original video with its denoised version and writes a film grain table |
+| `generate`    | Writes a film grain table with grain of a chosen strength, without any video        |
 | `apply`       | Writes a film grain table into an AV1 video                                         |
 | `export`      | Reads the film grain table out of an AV1 video                                      |
 | `remove`      | Removes film grain synthesis from an AV1 video                                      |
@@ -113,11 +114,20 @@ regrain diff <SOURCE> <DENOISED> -o <TABLE>
 | `--scene-threshold <N>`                | 4           | Brightness change between frames that starts a new scene, on a 0 to 255 scale           |
 | `--merge <N>`                          | 0.08        | How alike neighbouring scenes must be to share one table entry, from 0 to 1             |
 | `--output-depth <8\|10\|12>`           | 10          | Bit depth of the AV1 encode the grain will be added to                                  |
+| `--just-enough [<DEVIATION>]`          | off, 0.5    | Put back only enough grain to hide banding. See below                                   |
 | `--strict`                             | off         | Fail with `frames_differ` instead of warning when many frames differ between the videos |
 | `-v, --verbose`                        | off         | Print what was measured for every scene                                                 |
 | `-y, --overwrite`                      | off         | Replace an existing output file                                                         |
 
 Table timestamps start at zero at the first measured frame. With `--start`, the table describes the measured range and not the whole video.
+
+### Just enough grain
+
+A clean encode of a denoised video often shows banding in smooth gradients such as skies and dark backgrounds, because a screen shows them in whole 8 bit steps. A little noise hides those steps: noise with a deviation of half a step makes the rounding independent of the picture, and the steps blend into a smooth gradient again.
+
+`--just-enough` keeps the measured grain pattern and its change with brightness, but limits its strength to 0.5 on the 0 to 255 scale, or to the value given. Where the source had less grain than that, the measured grain is kept. Scenes that become alike under the limit share one table entry.
+
+On a slow dark gradient encoded with SVT-AV1 at CRF 30 and shown in 8 bit without dithering, the steps were 0.24 levels off a smooth ramp without grain. With `--just-enough` they were 0.09 off, against 0.09 for the encode itself in 10 bit, so the screen's steps were gone. 0.7 gave 0.08 with 40% more visible grain. Raise the limit when the encoder itself leaves visible steps or blocks.
 
 A denoiser can pipe its output straight into `diff`, without a lossless file in between:
 
@@ -206,6 +216,28 @@ regrain remove <INPUT> -o <OUTPUT>
 
 Removing the grain from a video that regrain wrote gives back the original file byte for byte when that file had no grain. `--verify` and `--fps` work as for `apply`.
 
+## generate
+
+```sh
+regrain generate -o <TABLE> --strength <DEVIATION>
+regrain generate -o <TABLE> --iso <ISO>
+```
+
+Writes a table with one entry for the whole video, for when there is no denoised version to measure, or to add light grain that hides banding.
+
+| Option                          | Default   | Meaning                                                    |
+| ------------------------------- | --------- | ---------------------------------------------------------- |
+| `--strength <N>`                |           | Grain deviation on the 0 to 255 scale at middle brightness |
+| `--iso <N>`                     |           | Camera sensor noise at this ISO, instead of `--strength`   |
+| `--resolution <WIDTHxHEIGHT>`   | 1920x1080 | Picture size the `--iso` noise is for                      |
+| `--size <fine\|medium\|coarse>` | `fine`    | Grain size. Neighbouring pixels are 0, 0.35 and 0.6 alike  |
+| `--chroma <N>`                  | 0         | Chroma grain deviation on the 0 to 255 scale               |
+| `-y, --overwrite`               | off       | Replace an existing output file                            |
+
+`--strength` grain is 0.6 times as strong at black and 0.7 times at white as in the middle, as film grain is. `--iso` follows the photon noise model of libaom: shot, read and pixel response noise of a 36 by 24 mm sensor with as many pixels as `--resolution`, carried through the BT.709 transfer function. It is nearly zero at black and grows with the square root of the ISO, so a 4K picture at the same ISO has stronger noise per pixel than a 1080p one. At 1080p, ISO 800 gives about 0.5 and ISO 6400 about 1.3.
+
+regrain builds the grain the way a decoder does and sets the scaling so the decoder output has the requested strength, which `stats` then shows. 0.5 with `--size fine` is the same strength as `diff --just-enough`.
+
 ## stats
 
 ```sh
@@ -244,13 +276,14 @@ In `start` and `progress`, `frames` and `total` count the frames the chosen scan
 
 Summary fields:
 
-| Command  | Fields                                                                                                                                                        |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `diff`   | `output`, `frames`, `frames_expected`, `scenes`, `entries`, `mismatched_frames`, `luma_deviation`, `scan`, `threads`, `fps`, `seconds`, `timings`, `warnings` |
-| `apply`  | `output`, `frames`, `grained_frames`, `entries`, `replaced_existing_grain`, `empty_table`, `verified`, `input_bytes`, `output_bytes`, `seconds`               |
-| `export` | `output`, `frames`, `entries`, `seconds`                                                                                                                      |
-| `remove` | `output`, `frames`, `had_grain`, `verified`, `input_bytes`, `output_bytes`, `seconds`                                                                         |
-| `stats`  | `entries`, `luma`, `list` with `start_seconds`, `end_seconds`, `luma_dark`, `luma_mid`, `luma_bright`, `luma`, `cb`, `cr`, `lag`, `correlation` per entry     |
+| Command    | Fields                                                                                                                                                        |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `diff`     | `output`, `frames`, `frames_expected`, `scenes`, `entries`, `mismatched_frames`, `luma_deviation`, `scan`, `threads`, `fps`, `seconds`, `timings`, `warnings` |
+| `apply`    | `output`, `frames`, `grained_frames`, `entries`, `replaced_existing_grain`, `empty_table`, `verified`, `input_bytes`, `output_bytes`, `seconds`               |
+| `generate` | `output`, `entries`, `luma`, `cb`, `cr`, `correlation`                                                                                                        |
+| `export`   | `output`, `frames`, `entries`, `seconds`                                                                                                                      |
+| `remove`   | `output`, `frames`, `had_grain`, `verified`, `input_bytes`, `output_bytes`, `seconds`                                                                         |
+| `stats`    | `entries`, `luma`, `list` with `start_seconds`, `end_seconds`, `luma_dark`, `luma_mid`, `luma_bright`, `luma`, `cb`, `cr`, `lag`, `correlation` per entry     |
 
 `warnings` is a list of objects with a `code` and a `message`. The codes are `frames_differ`, when many frames do not match between the two videos, and `no_grain`, when the table is empty.
 

@@ -397,10 +397,19 @@ impl Fit {
   }
 }
 
-pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8) -> Fit {
+// `cap` limits the grain at every brightness to a deviation on the 0 to 255 scale.
+pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, cap: Option<f64>) -> Fit {
   let planes = run.effective();
   let bit_depth = format.bit_depth;
-  let curves: Vec<Curve> = planes.iter().map(|plane| Curve::measure(plane, bit_depth, output_depth)).collect();
+  let mut curves: Vec<Curve> = planes.iter().map(|plane| Curve::measure(plane, bit_depth, output_depth)).collect();
+  if let Some(cap) = cap {
+    let native = cap * (1u32 << (bit_depth - 8)) as f64;
+    for curve in &mut curves {
+      for sigma in &mut curve.sigma {
+        *sigma = sigma.min(native);
+      }
+    }
+  }
   let luma = &planes[0];
   let rho = if luma.weight >= MIN_CORRELATION_WEIGHT {
     [

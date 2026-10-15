@@ -71,6 +71,8 @@ pub struct DiffOptions {
   pub progress: Progress,
   pub verbose: bool,
   pub output_depth: u8,
+  // Largest grain deviation to put back, on the 0 to 255 scale.
+  pub just_enough: Option<f64>,
 }
 
 pub struct DiffReport {
@@ -308,7 +310,7 @@ impl Collector {
   }
 }
 
-fn build_segments(mut runs: Vec<Run>, format: PixelFormat, tolerance: f64, output_depth: u8) -> Vec<(u64, Fit)> {
+fn build_segments(mut runs: Vec<Run>, format: PixelFormat, tolerance: f64, output_depth: u8, cap: Option<f64>) -> Vec<(u64, Fit)> {
   while runs.len() > 1 {
     let Some(poor) = runs.iter().position(|run| run.stats.luma_blocks() < MIN_RUN_BLOCKS) else {
       break;
@@ -321,14 +323,14 @@ fn build_segments(mut runs: Vec<Run>, format: PixelFormat, tolerance: f64, outpu
       runs[0].start = run.start;
     }
   }
-  let mut fits: Vec<Fit> = runs.iter().map(|run| fit(&run.stats, format, output_depth)).collect();
+  let mut fits: Vec<Fit> = runs.iter().map(|run| fit(&run.stats, format, output_depth, cap)).collect();
   let mut index = 0;
   while index + 1 < runs.len() {
     if fits[index].similar(&fits[index + 1], tolerance) {
       let next = runs.remove(index + 1);
       fits.remove(index + 1);
       runs[index].stats.merge(&next.stats);
-      fits[index] = fit(&runs[index].stats, format, output_depth);
+      fits[index] = fit(&runs[index].stats, format, output_depth, cap);
     } else {
       index += 1;
     }
@@ -654,7 +656,13 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
 
   let analysed = collector.frames;
   let mismatched = collector.mismatched;
-  let segments = build_segments(collector.runs, format, options.merge_tolerance, options.output_depth);
+  let segments = build_segments(
+    collector.runs,
+    format,
+    options.merge_tolerance,
+    options.output_depth,
+    options.just_enough,
+  );
   let mut table = GrainTable::default();
   let mut sigma_total = 0.0;
   for (index, (start, fit)) in segments.iter().enumerate() {

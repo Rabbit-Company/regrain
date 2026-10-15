@@ -5,6 +5,7 @@ mod cancel;
 mod container;
 mod diff;
 mod framing;
+mod generate;
 mod grain;
 mod ivf;
 mod report;
@@ -107,12 +108,39 @@ enum Command {
     /// Bit depth of the AV1 encode the grain will be added to
     #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(8..=12))]
     output_depth: u8,
+    /// Put back only enough grain to hide banding, at most this deviation on a 0 to 255 scale
+    #[arg(long, value_name = "DEVIATION", num_args = 0..=1, default_missing_value = "0.5")]
+    just_enough: Option<f64>,
     /// Overwrite the output file if it exists
     #[arg(short = 'y', long)]
     overwrite: bool,
     /// ffmpeg executable, ffprobe is expected next to it
     #[arg(long, default_value = "ffmpeg")]
     ffmpeg: String,
+  },
+  /// Write a film grain table with grain of a chosen strength, without measuring a video
+  Generate {
+    /// Output film grain table
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Grain deviation on a 0 to 255 scale, a little weaker in deep shadows and highlights
+    #[arg(long, required_unless_present = "iso", conflicts_with = "iso")]
+    strength: Option<f64>,
+    /// Camera sensor noise at this ISO instead of a fixed strength
+    #[arg(long, value_parser = clap::value_parser!(u32).range(50..=409600))]
+    iso: Option<u32>,
+    /// Picture size the --iso noise is for, as WIDTHxHEIGHT. Smaller pictures have larger pixels and less noise
+    #[arg(long, default_value = "1920x1080", value_parser = parse_resolution)]
+    resolution: (u32, u32),
+    /// How large the grain is
+    #[arg(long, value_enum, default_value = "fine")]
+    size: generate::Size,
+    /// Chroma grain deviation on a 0 to 255 scale
+    #[arg(long, default_value_t = 0.0)]
+    chroma: f64,
+    /// Overwrite the output file if it exists
+    #[arg(short = 'y', long)]
+    overwrite: bool,
   },
   /// Read the film grain table out of an AV1 video
   Export {
@@ -204,6 +232,14 @@ fn parse_fps(value: &str) -> std::result::Result<(u32, u32), String> {
   fraction
     .filter(|&(num, den)| num > 0 && den > 0)
     .ok_or_else(|| format!("{value} is not a frame rate, use a value like 24000/1001 or 25"))
+}
+
+fn parse_resolution(value: &str) -> std::result::Result<(u32, u32), String> {
+  value
+    .split_once(['x', 'X', ':'])
+    .and_then(|(width, height)| width.trim().parse::<u32>().ok().zip(height.trim().parse::<u32>().ok()))
+    .filter(|&(width, height)| width > 0 && height > 0)
+    .ok_or_else(|| format!("{value} is not a picture size, use a value like 1920x1080"))
 }
 
 fn file_size(path: &Path) -> Option<u64> {
@@ -302,9 +338,13 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       verbose,
       strict,
       output_depth,
+      just_enough,
       overwrite,
       ffmpeg,
     } => {
+      if just_enough.is_some_and(|cap| !cap.is_finite() || cap < 0.0) {
+        return Err(fail("invalid_argument", "--just-enough must be 0 or more"));
+      }
       check_output(&source, &output, overwrite)?;
       check_output(&denoised, &output, overwrite)?;
       if let (Ok(a), Ok(b)) = (source.canonicalize(), denoised.canonicalize())
@@ -330,6 +370,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         progress: reporter.mode,
         verbose,
         output_depth,
+        just_enough,
       };
       let (table, report) = diff::run(&options)?;
       let differ = report.mismatched * 5 > report.frames;
@@ -479,6 +520,64 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       let mut text = Vec::new();
       clap_mangen::Man::new(command).render(&mut text).code("io_error")?;
       print_bytes(&text)?;
+    }
+    Command::Generate {
+      output,
+      strength,
+      iso,
+      resolution,
+      size,
+      chroma,
+      overwrite,
+    } => {
+      if output.exists() && !overwrite {
+        return Err(fail(
+          "output_exists",
+          format!("{} already exists, pass --overwrite to replace it", output.display()),
+        ));
+      }
+      let model = match (strength, iso) {
+        (Some(strength), _) => generate::Model::Strength(strength),
+        (None, Some(iso)) => generate::Model::Iso {
+          iso,
+          width: resolution.0,
+          height: resolution.1,
+        },
+        (None, None) => return Err(fail("invalid_argument", "pass --strength or --iso")),
+      };
+      let table = generate::generate(&generate::GenerateOptions { model, size, chroma })?;
+      table.write(&output)?;
+      let entry = table
+        .segments
+        .first()
+        .map(|segment| stats::entry_stats(segment.start, segment.end, &segment.params));
+      match &entry {
+        Some(entry) => reporter.text(format!(
+          "Luma grain {:.3} {:.3} {:.3} at brightness 32, 128 and 224, cb {:.3}, cr {:.3}, corr {:.2}, wrote {}",
+          entry.luma[0],
+          entry.luma[1],
+          entry.luma[2],
+          entry.chroma[0],
+          entry.chroma[1],
+          entry.correlation,
+          output.display()
+        )),
+        None => reporter.text(format!(
+          "The grain is too weak to describe, wrote an empty table to {}",
+          output.display()
+        )),
+      }
+      reporter.summary(
+        "generate",
+        vec![
+          ("output", path_json(&output)),
+          ("entries", Json::from(table.segments.len())),
+          ("luma", Json::from(entry.as_ref().map(|entry| entry.luma_mean))),
+          ("cb", Json::from(entry.as_ref().map(|entry| entry.chroma[0]))),
+          ("cr", Json::from(entry.as_ref().map(|entry| entry.chroma[1]))),
+          ("correlation", Json::from(entry.as_ref().map(|entry| entry.correlation))),
+        ],
+      );
     }
     Command::Export {
       input,

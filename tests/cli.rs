@@ -158,6 +158,16 @@ fn diff_measures_added_noise() {
   let chroma_luma = chroma_text.lines().find(|line| line.trim_start().starts_with("sY")).unwrap();
   assert_eq!(luma, chroma_luma, "--no-chroma must measure the same luma");
 
+  let capped = path(&dir, "capped.tbl");
+  assert!(
+    regrain(&["diff", &noisy, &clean, "-o", &capped, "-q", "--just-enough"])
+      .status
+      .success()
+  );
+  let stats = regrain(&["stats", &capped, "--progress", "json"]);
+  let stats = String::from_utf8(stats.stdout).unwrap();
+  assert!(stats.contains("\"luma_mid\":0.5,"), "{stats}");
+
   let y4m = path(&dir, "clean.y4m");
   assert!(ffmpeg(&["-i", &clean, "-strict", "-1", "-f", "yuv4mpegpipe", &y4m]));
   let piped_table = path(&dir, "piped.tbl");
@@ -211,6 +221,33 @@ fn diff_measures_added_noise() {
   std::fs::copy(&clean, &copy).unwrap();
   assert!(regrain(&["diff", &copy, &clean, "-o", &empty, "-q"]).status.success());
   assert_eq!(std::fs::read_to_string(&empty).unwrap(), "filmgrn1\n");
+  let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn generate_writes_the_requested_grain() {
+  let dir = workspace("generate");
+  let table = path(&dir, "grain.tbl");
+  let made = regrain(&["generate", "-o", &table, "--strength", "1.5", "--size", "medium", "--chroma", "0.4"]);
+  assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+  let stats = String::from_utf8(regrain(&["stats", &table, "--progress", "json"]).stdout).unwrap();
+  for field in ["\"entries\":1,", "\"luma_mid\":1.5", "\"lag\":2,"] {
+    assert!(stats.contains(field), "{field} missing in {stats}");
+  }
+
+  let exists = regrain(&["generate", "-o", &table, "--iso", "800"]);
+  assert!(String::from_utf8_lossy(&exists.stderr).contains("already exists"));
+  let iso = regrain(&["generate", "-o", &table, "--iso", "800", "-y", "--progress", "json"]);
+  let summary = String::from_utf8(iso.stdout).unwrap();
+  assert!(summary.starts_with("{\"event\":\"summary\",\"command\":\"generate\""), "{summary}");
+  assert!(!regrain(&["generate", "-o", &table, "-y"]).status.success());
+  assert!(
+    !regrain(&["generate", "-o", &table, "-y", "--strength", "1", "--iso", "800"])
+      .status
+      .success()
+  );
+  let too_strong = regrain(&["generate", "-o", &table, "-y", "--strength", "80", "--progress", "json"]);
+  assert!(String::from_utf8_lossy(&too_strong.stdout).contains("\"code\":\"invalid_argument\""));
   let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -4,6 +4,11 @@ Error codes, JSON field names and the film grain table format stay compatible wi
 
 ## Unreleased
 
+### Features
+
+- `generate` writes a table without measuring a video, with `--strength` for a grain deviation on the 0 to 255 scale or `--iso` for camera sensor noise after libaom's photon noise model. `--size fine|medium|coarse` sets how large the grain is and `--chroma` adds chroma grain. regrain builds the grain the way a decoder does, so the decoder output has the requested strength.
+- `diff --just-enough` puts back only enough grain to hide banding: the measured grain, limited to a deviation of 0.5 on the 0 to 255 scale or the value given. On a dark gradient shown in 8 bit, it took the banding from 0.24 levels to 0.09, the same as the encode itself has in 10 bit.
+
 ### Fixes
 
 - 0.1.3 cut the grain one level above the black or white of letterbox bars, to cover encoders that miss black by one level next to the picture. That level is also where pure black picture areas with grain sit, and on a letterboxed anime clip the error in the picture rose from 2.4% to 4.8% for almost no gain in the bars. The grain is now cut at the level of the bars only, which gives 3.0% in the picture and no grain in the bars. Picture areas at exactly that level still lose their grain, since AV1 sets grain by brightness alone.
