@@ -98,8 +98,12 @@ impl GrainTable {
       };
       let points = || -> Result<Vec<[u8; 2]>> {
         let n = numbers()?;
-        let count = *n.first().context("missing point count")? as usize;
-        if n.len() != 1 + 2 * count {
+        let count = usize::try_from(*n.first().context("missing point count")?).ok();
+        if count
+          .and_then(|count| count.checked_mul(2))
+          .and_then(|values| values.checked_add(1))
+          != Some(n.len())
+        {
           bail!("point count does not match the values: {line}");
         }
         n[1..].chunks(2).map(|c| Ok([u8::try_from(c[0])?, u8::try_from(c[1])?])).collect()

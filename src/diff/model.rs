@@ -353,8 +353,11 @@ fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32]
   let blank = |level: &usize| constant[*level] as u64 >= MIN_BIN_BLOCKS;
   let below = (0..first).rev().find(blank);
   let above = (last + 1..256).find(blank);
-  let reserved = below.map_or(0, |level| 1 + usize::from(level + 1 < first)) + above.map_or(0, |level| 1 + usize::from(level - 1 > last));
-  let max_points = max_points.saturating_sub(reserved).max(1);
+  // The cut points depend on where the simplified range ends, which moves when an end point is dropped.
+  let cuts = |points: &[(f64, f64)]| -> usize {
+    below.map_or(0, |level| 1 + usize::from((level as f64 + 1.0) < points[0].0))
+      + above.map_or(0, |level| 1 + usize::from((level as f64 - 1.0) > points[points.len() - 1].0))
+  };
   let reference = points.clone();
   let evaluate = |points: &[(f64, f64)], x: f64| -> f64 {
     if x <= points[0].0 {
@@ -379,7 +382,7 @@ fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32]
       }
     }
     let (remove, error) = best.unwrap();
-    if points.len() <= max_points && error > POINT_TOLERANCE {
+    if points.len() + cuts(&points) <= max_points && error > POINT_TOLERANCE {
       break;
     }
     points.remove(remove);
@@ -666,5 +669,26 @@ mod tests {
     constant[235] = MIN_BIN_BLOCKS as u32 - 1;
     let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant);
     assert_ne!(points[points.len() - 1][1], 0);
+  }
+
+  #[test]
+  fn stays_within_the_limit_when_simplifying_moves_the_measured_range() {
+    let mut curve = Curve {
+      sigma: [0.0; BINS],
+      counts: [0; BINS],
+      active: true,
+    };
+    // The first two bins match, so dropping the first one costs nothing and the range starts one bin later.
+    for bin in 2..BINS {
+      curve.sigma[bin] = if bin <= 3 { 2.0 } else { 2.0 + ((bin as f64) * 1.7).sin() };
+      curve.counts[bin] = 100;
+    }
+    let first = 2 * 256 / BINS + 128 / BINS;
+    let mut constant = [0u32; 256];
+    constant[first - 1] = 500;
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant);
+    assert!(points.len() <= MAX_LUMA_POINTS, "{} points: {points:?}", points.len());
+    assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]), "{points:?}");
+    assert_eq!(points[0], [(first - 1) as u8, 0]);
   }
 }

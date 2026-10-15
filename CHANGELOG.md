@@ -2,6 +2,13 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.2.1 - 2026-10-15
+
+### Fixes
+
+- `diff` could write a scene with 15 luma scaling points, one more than AV1 allows, and `apply` then refused the table with `too many luma scaling points (15, limit 14)`. Room for the points that cut grain to zero at black or white was set aside from the measured levels before they were reduced to fit the limit. When the reduction dropped the darkest or brightest level and the constant level sat right next to it, one more point was added than was set aside. The points are now counted against the reduced levels, so a scene never has more than 14. Scenes that stayed within the limit give the same tables as 0.2.0.
+- Reading a damaged table with a negative or very large point count no longer panics in debug builds. It is rejected as a table whose point count does not match its values, as release builds already did.
+
 ## 0.2.0 - 2026-10-15
 
 ### Features

@@ -54,8 +54,8 @@ A build that is too new for the CPU crashes with an illegal instruction error an
 On Linux and macOS:
 
 ```sh
-tar -xzf regrain-v0.2.0-linux-x86_64-v3.tar.gz
-sudo install regrain-v0.2.0-linux-x86_64-v3/regrain /usr/local/bin/
+tar -xzf regrain-v0.2.1-linux-x86_64-v3.tar.gz
+sudo install regrain-v0.2.1-linux-x86_64-v3/regrain /usr/local/bin/
 ```
 
 The macOS binaries are not signed. If macOS refuses to open it, clear the quarantine flag once:
