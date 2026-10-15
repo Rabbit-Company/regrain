@@ -321,8 +321,10 @@ fn choose_lag(stats: &PlaneStats, with_luma: bool) -> i32 {
 
 // AV1 holds the first and last scaling values for every level beyond them. Where the
 // source has no grain at such a level, such as letterbox bars, the grain is cut to zero
-// there. The cut reaches one level further in, since encoders often miss flat areas by
-// one level next to the picture, and the grain comes back in full one level after that.
+// there and comes back in full one level further in. Picture areas at that exact level,
+// such as pure black with grain, lose their grain too, since AV1 cannot tell them apart.
+// Cutting further in to cover encoders that miss black by one level cost more grain in
+// such areas than it saved in the bars.
 fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32]) -> Vec<[u8; 2]> {
   let mut points: Vec<(f64, f64)> = (0..BINS)
     .filter(|&bin| curve.counts[bin] >= MIN_BIN_BLOCKS)
@@ -330,8 +332,8 @@ fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32]
     .collect();
   let (first, last) = (points[0].0 as usize, points[points.len() - 1].0 as usize);
   let blank = |level: &usize| constant[*level] as u64 >= MIN_BIN_BLOCKS;
-  let below = (0..first).rev().find(blank).map(|level| (level + 1).min(first - 1));
-  let above = (last + 1..256).find(blank).map(|level| (level - 1).max(last + 1));
+  let below = (0..first).rev().find(blank);
+  let above = (last + 1..256).find(blank);
   let reserved = below.map_or(0, |level| 1 + usize::from(level + 1 < first)) + above.map_or(0, |level| 1 + usize::from(level - 1 > last));
   let max_points = max_points.saturating_sub(reserved).max(1);
   let reference = points.clone();
@@ -623,12 +625,12 @@ mod tests {
     let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant);
     assert!(points.len() <= MAX_LUMA_POINTS, "{points:?}");
     assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]), "{points:?}");
-    assert_eq!(points[0], [17, 0]);
-    assert_eq!(points[1][0], 18);
+    assert_eq!(points[0], [16, 0]);
+    assert_eq!(points[1][0], 17);
     assert_eq!(points[1][1], points[2][1]);
     let n = points.len();
-    assert_eq!(points[n - 1], [234, 0]);
-    assert_eq!(points[n - 2][0], 233);
+    assert_eq!(points[n - 1], [235, 0]);
+    assert_eq!(points[n - 2][0], 234);
     assert_eq!(points[n - 2][1], points[n - 3][1]);
     // A level inside the measured range keeps its measured grain.
     assert!(points[1..n - 1].iter().all(|point| point[1] > 0));

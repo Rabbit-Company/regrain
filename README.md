@@ -155,7 +155,7 @@ The table is the same for every thread count.
 7. regrain then builds the grain the way an AV1 decoder does and measures it, and sets the scaling values so the decoder output has the measured strength.
 8. Neighbouring scenes with the same grain share one table entry.
 
-Blocks where the source is perfectly constant, such as letterbox bars, are not measured. An AV1 decoder gives every brightness below the darkest scaling point the grain of that point, so when such blocks are darker than everything measured, the grain is set to zero at their level and one level above it, and comes back in full one level further up. Constant blocks brighter than everything measured are handled the same way. Bars and black frames then stay clean.
+Blocks where the source is perfectly constant, such as letterbox bars, are not measured. An AV1 decoder gives every brightness below the darkest scaling point the grain of that point, so when such blocks are darker than everything measured, the grain is set to zero at their level and comes back in full one level further up. Constant blocks brighter than everything measured are handled the same way. Bars and black frames then stay clean. Picture areas at exactly that level, such as pure black with grain, get no grain either, because the decoder chooses the grain by brightness alone.
 
 ## apply
 
@@ -347,7 +347,7 @@ Peak memory was 185 MB for 1080p and 1.2 GB for 4K with 16 threads. Very large f
 
 `REGRAIN_FUZZ_DIR=<folder> REGRAIN_FUZZ_ROUNDS=<n> cargo test --release damaged_streams` feeds damaged copies of every IVF file in a folder through the parser and the rewriter. 4.84 million damaged copies of the libaom vectors caused no panic.
 
-`scripts/accuracy.py` produced the accuracy numbers above and `scripts/speed.sh` the speed numbers. `scripts/charts.py` draws the charts from them.
+`scripts/accuracy.py` produced the accuracy numbers above and `scripts/speed.sh` the speed numbers. Besides the error against the removed grain, it reports `vs source`, the noise a viewer sees in the grained decode against the noise in the source, and `spill`, the grain added where the source is perfectly constant. `scripts/charts.py` draws the charts from them.
 
 ## Limits
 

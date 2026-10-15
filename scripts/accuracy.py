@@ -12,6 +12,13 @@ denoiser removed does not count as grain.
 The error is the mean difference in grain deviation for every stretch of --segment
 frames and every brightness level, weighted by how many blocks each holds. Values are on
 the 0 to 255 scale. Needs ffmpeg with libdav1d, ffprobe and numpy.
+
+Two more columns look at what a viewer sees. "vs source" compares the noise in the
+grained decode with the noise in the source, in the same flat areas and after taking out
+gradients, the same way as the error. It also counts grain the encoder smoothed away, so
+the row for the encode without grain shows how much is missing before any grain is
+added. "spill" is the grain the decoder adds where the source is perfectly constant, such
+as letterbox bars and black frames, and should be 0.
 """
 import argparse
 import subprocess
@@ -47,6 +54,20 @@ def blocks(plane, size):
     h -= h % size
     w -= w % size
     return plane[:h, :w].reshape(h // size, size, w // size, size).transpose(0, 2, 1, 3).reshape(h // size, w // size, size * size)
+
+
+_ramp = np.arange(BLOCK, dtype=np.float32) - (BLOCK - 1) / 2
+RAMP_X = np.tile(_ramp, BLOCK)
+RAMP_Y = np.repeat(_ramp, BLOCK)
+
+
+def detrended_variance(block_values):
+    """Variance of every block after taking out its mean and a linear gradient."""
+    centred = block_values - block_values.mean(axis=-1, keepdims=True)
+    gx = (centred @ RAMP_X) / (RAMP_X @ RAMP_X)
+    gy = (centred @ RAMP_Y) / (RAMP_Y @ RAMP_Y)
+    rest = centred - gx[..., None] * RAMP_X - gy[..., None] * RAMP_Y
+    return rest.var(axis=-1)
 
 
 def main():
@@ -87,7 +108,12 @@ def main():
         for name in args.grained
     }
     names = ["removed"] + args.grained
+    bare = "encode, no grain"
     stats = {}
+    # Noise the viewer sees in flat areas, by stretch: variance and block count per level.
+    views = {}
+    # Grain added where the source is constant: summed deviation and block count.
+    spill = {name: [0.0, 0] for name in args.grained}
     index = 0
     while True:
         s, d = frame(source), frame(denoised)
@@ -96,12 +122,27 @@ def main():
         stretch = index * args.step // args.segment
         index += 1
         den_blocks = blocks(d[0], BLOCK)
-        flat = (den_blocks.std(axis=2) < 1.5) & ~(blocks(s[0], BLOCK).std(axis=2) == 0)
+        src_blocks = blocks(s[0], BLOCK)
+        constant = src_blocks.std(axis=2) == 0
+        flat = (den_blocks.std(axis=2) < 1.5) & ~constant
         level = np.clip((den_blocks.mean(axis=2) / LEVELS).astype(int), 0, 255 // LEVELS)
+
+        def view(name, picture):
+            entry = views.setdefault((name, stretch), (np.zeros(16), np.zeros(16)))
+            np.add.at(entry[0], level[flat], detrended_variance(blocks(picture, BLOCK)[flat]))
+            np.add.at(entry[1], level[flat], 1)
+
+        view("source", s[0])
         grains = {"removed": (s[0] - d[0], s[1] - d[1], s[2] - d[2])}
-        for name in args.grained:
+        for number, name in enumerate(args.grained):
             with_grain, without = frame(grained[name][0]), frame(grained[name][1])
             grains[name] = tuple(a - b for a, b in zip(with_grain, without))
+            view(name, with_grain[0])
+            if number == 0:
+                view(bare, without[0])
+            added = blocks(grains[name][0], BLOCK)[constant]
+            spill[name][0] += float(added.std(axis=1).sum())
+            spill[name][1] += len(added)
         for name, (gy, gu, gv) in grains.items():
             entry = stats.setdefault((name, stretch), dict(var=np.zeros(16), count=np.zeros(16), corr=np.zeros(2), energy=0.0, chroma=0.0, chroma_count=0))
             gb = blocks(gy, BLOCK)
@@ -123,7 +164,23 @@ def main():
 
     stretches = sorted({stretch for (_, stretch) in stats})
     print(f"frames compared: {index}, stretches: {len(stretches)}")
-    print(f"{'file':32s} {'luma':>6s} {'chroma':>7s} {'corr h':>7s} {'corr v':>7s} {'error':>7s} {'relative':>9s}")
+    def versus_source(name):
+        error = total = 0.0
+        for s in stretches:
+            truth_var, count = views[("source", s)]
+            used = count > 0
+            truth = np.sqrt(truth_var[used] / count[used])
+            seen = np.sqrt(views[(name, s)][0][used] / count[used])
+            error += (np.abs(seen - truth) / np.maximum(truth, 0.05) * count[used]).sum()
+            total += count[used].sum()
+        return f"{100 * error / max(total, 1):9.1f}%"
+
+    constant_blocks = spill[args.grained[0]][1]
+    print(f"constant source blocks for spill: {constant_blocks}")
+    print(
+        f"{'file':32s} {'luma':>6s} {'chroma':>7s} {'corr h':>7s} {'corr v':>7s} {'error':>7s} {'relative':>9s}"
+        f" {'vs source':>10s} {'spill':>7s}"
+    )
     for name in names:
         rows = [stats[(name, s)] for s in stretches]
         var = sum(r["var"] for r in rows)
@@ -141,7 +198,16 @@ def main():
             error += (np.abs(measured - truth) * weight).sum()
             relative += (np.abs(measured - truth) / np.maximum(truth, 0.05) * weight).sum()
             total += weight.sum()
-        print(f"{name[-32:]:32s} {np.sqrt(var.sum() / max(count.sum(), 1)):6.3f} {np.sqrt(chroma):7.3f} {corr[0]:7.2f} {corr[1]:7.2f} {error / max(total, 1):7.3f} {100 * relative / max(total, 1):8.1f}%")
+        if name == "removed":
+            extra = f" {'-':>10s} {'-':>7s}"
+        else:
+            spilled = spill[name][0] / spill[name][1] if spill[name][1] else 0.0
+            extra = f" {versus_source(name)} {spilled:7.3f}"
+        print(
+            f"{name[-32:]:32s} {np.sqrt(var.sum() / max(count.sum(), 1)):6.3f} {np.sqrt(chroma):7.3f} {corr[0]:7.2f}"
+            f" {corr[1]:7.2f} {error / max(total, 1):7.3f} {100 * relative / max(total, 1):8.1f}%{extra}"
+        )
+    print(f"{bare:32s} {'':>6s} {'':>7s} {'':>7s} {'':>7s} {'':>7s} {'':>9s} {versus_source(bare)} {'-':>7s}")
 
 
 if __name__ == "__main__":

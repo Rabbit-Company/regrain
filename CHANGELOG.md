@@ -2,6 +2,16 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## Unreleased
+
+### Fixes
+
+- 0.1.3 cut the grain one level above the black or white of letterbox bars, to cover encoders that miss black by one level next to the picture. That level is also where pure black picture areas with grain sit, and on a letterboxed anime clip the error in the picture rose from 2.4% to 4.8% for almost no gain in the bars. The grain is now cut at the level of the bars only, which gives 3.0% in the picture and no grain in the bars. Picture areas at exactly that level still lose their grain, since AV1 sets grain by brightness alone.
+
+### Tests
+
+- `scripts/accuracy.py` has two more columns. `vs source` compares the noise in the grained decode with the noise in the source, so it also counts grain the encoder smoothed away, and a row for the encode without grain shows how much is missing to begin with. `spill` is the grain added where the source is perfectly constant, which the error never looked at.
+
 ## 0.1.3 - 2026-10-14
 
 ### Fixes
