@@ -459,3 +459,142 @@ fn full_disk_leaves_no_partial_output() {
   assert!(left.is_empty(), "{left:?}");
   let _ = std::fs::remove_dir_all(&dir);
 }
+
+// Entry 1 has a sloped curve and chroma multipliers that clamp the Cb index at
+// the top and the Cr index at the bottom. Entry 2 has flat curves and no overlap,
+// so its first frame shows the template values of its seed unblended.
+const CURVE_TABLE: &str = "filmgrn1\nE 0 4000000 1 4321 1\n\tp 2 8 0 10 0 1 160 200 240 100 170 280\n\tsY 3  0 40 128 120 255 200\n\tsCb 2 0 30 255 150\n\tsCr 2 0 200 255 20\n\tcY 2 4 6 4 2 4 10 24 10 4 6 26\n\tcCb 0 0 4 0 0 0 6 16 6 0 4 18 20\n\tcCr 1 -2 3 0 1 0 5 12 4 0 3 14 -30\nE 4000000 9223372036854775807 1 999 1\n\tp 3 8 0 9 0 0 128 192 256 128 192 256\n\tsY 1  128 40\n\tsCb 1 128 150\n\tsCr 1 128 90\n\tcY 2 -1 2 0 -2 1 3 1 3 4 2 0 2 4 6 10 5 1 -1 5 9 15 7 20\n\tcCb 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 10 30 40\n\tcCr 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 -20\n";
+
+fn json_curve(json: &str, entry: usize, key: &str) -> Vec<f64> {
+  let curves = json.split("\"curves\":").nth(entry + 1).unwrap();
+  let values = curves.split(&format!("\"{key}\":[")).nth(1).unwrap();
+  values[..values.find(']').unwrap()]
+    .split(',')
+    .map(|value| value.parse().unwrap())
+    .collect()
+}
+
+#[test]
+fn stats_curves_match_the_decoder() {
+  const W: usize = 1920;
+  const H: usize = 1080;
+  const FRAMES: usize = 11;
+  const LEVELS: [usize; 8] = [24, 52, 80, 108, 136, 164, 192, 220];
+  let dir = workspace("curves");
+  // Bands 128 rows high, each at one brightness with neutral chroma.
+  let mut frame = Vec::with_capacity(W * H * 3);
+  for y in 0..H {
+    let level = LEVELS[(y / 128).min(7)] as u16 * 4;
+    frame.extend(std::iter::repeat_n(level.to_le_bytes(), W).flatten());
+  }
+  frame.extend(std::iter::repeat_n(512u16.to_le_bytes(), W * H / 2).flatten());
+  let raw = path(&dir, "bands.yuv");
+  std::fs::write(&raw, frame.repeat(FRAMES)).unwrap();
+  let clean = path(&dir, "clean.ivf");
+  let input = [
+    "-f",
+    "rawvideo",
+    "-pix_fmt",
+    "yuv420p10le",
+    "-s",
+    "1920x1080",
+    "-r",
+    "25",
+    "-i",
+    &raw,
+  ];
+  let encoded = [
+    &["-c:v", "libsvtav1", "-preset", "12", "-crf", "20"][..],
+    &["-c:v", "libaom-av1", "-cpu-used", "8", "-crf", "20"][..],
+  ]
+  .iter()
+  .any(|encoder| ffmpeg(&[&input[..], encoder, &[&clean]].concat()));
+  let decode = |video: &str, grain: &str, out: &str| {
+    ffmpeg(&[
+      "-c:v",
+      "libdav1d",
+      "-filmgrain",
+      grain,
+      "-i",
+      video,
+      "-f",
+      "rawvideo",
+      "-pix_fmt",
+      "yuv420p10le",
+      out,
+    ])
+  };
+  let plain = path(&dir, "plain.yuv");
+  if !encoded || !decode(&clean, "0", &plain) {
+    eprintln!("skipped: ffmpeg with an AV1 encoder and libdav1d is not available");
+    return;
+  }
+  let table = path(&dir, "curves.tbl");
+  std::fs::write(&table, CURVE_TABLE).unwrap();
+  let grained = path(&dir, "grained.ivf");
+  let applied = regrain(&["apply", &clean, "-o", &grained, "-t", &table, "-q"]);
+  assert!(applied.status.success(), "{}", String::from_utf8_lossy(&applied.stderr));
+  let noisy = path(&dir, "noisy.yuv");
+  assert!(decode(&grained, "1", &noisy));
+  let stats = regrain(&["stats", &table, "--curves", "--progress", "json"]);
+  let json = String::from_utf8(stats.stdout).unwrap();
+
+  let samples = |name: &str| -> Vec<u16> {
+    std::fs::read(name)
+      .unwrap()
+      .as_chunks::<2>()
+      .0
+      .iter()
+      .map(|&pair| u16::from_le_bytes(pair))
+      .collect()
+  };
+  let (plain, noisy) = (samples(&plain), samples(&noisy));
+  assert_eq!(plain.len(), W * H * 3 / 2 * FRAMES);
+  assert!(noisy.iter().all(|&value| value > 0 && value < 1023), "grain was clipped");
+  // Plane offset, width and band height of luma, Cb and Cr within a frame.
+  let planes = [(0, W, 128), (W * H, W / 2, 64), (W * H * 5 / 4, W / 2, 64)];
+
+  // Entry 1: the deviation over its 10 frames, away from the band edges.
+  for (plane, key) in ["luma", "cb", "cr"].into_iter().enumerate() {
+    let curve = json_curve(&json, 0, key);
+    let (offset, width, band) = planes[plane];
+    for (index, &level) in LEVELS.iter().enumerate() {
+      let mut sum = 0.0;
+      let mut sum_sq = 0.0;
+      let mut count = 0.0;
+      for f in 0..10 {
+        let base = f * W * H * 3 / 2 + offset;
+        for y in index * band + band / 8..(index + 1) * band - band / 8 {
+          for x in 0..width {
+            let at = base + y * width + x;
+            let noise = noisy[at] as f64 - plain[at] as f64;
+            sum += noise;
+            sum_sq += noise * noise;
+            count += 1.0;
+          }
+        }
+      }
+      let measured = (sum_sq / count - (sum / count).powi(2)).sqrt() / 4.0;
+      // The decoder rounds the grain to whole 10 bit values, which adds 1/12 of a step squared.
+      let expected = (curve[level].powi(2) + 1.0 / 12.0 / 16.0).sqrt();
+      assert!(
+        (measured - expected).abs() < 0.04 * expected + 0.01,
+        "{key} at {level}: decoder {measured:.3}, stats {expected:.3}"
+      );
+    }
+  }
+
+  // Entry 2: the largest grain in its first frame is the peak of its seed.
+  for (plane, key) in ["luma_peak", "cb_peak", "cr_peak"].into_iter().enumerate() {
+    let curve = json_curve(&json, 1, key);
+    assert!(curve.iter().all(|&value| value == curve[0]), "{key} is not flat");
+    let (offset, width, _) = planes[plane];
+    let base = 10 * W * H * 3 / 2 + offset;
+    let largest = (0..H / if plane == 0 { 1 } else { 2 } * width)
+      .map(|at| (noisy[base + at] as i32 - plain[base + at] as i32).abs())
+      .max()
+      .unwrap();
+    assert_eq!(largest as f64 / 4.0, curve[0], "{key}");
+  }
+  let _ = std::fs::remove_dir_all(&dir);
+}

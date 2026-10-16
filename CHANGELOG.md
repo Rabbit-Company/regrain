@@ -2,6 +2,17 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.2.3 - 2026-10-16
+
+### Features
+
+- `stats --curves` shows the grain at every brightness level from 0 to 255 for luma, Cb and Cr, as a deviation and as the peak for the entry's seed. The peak comes from grain templates built bit for bit as an AV1 decoder builds them. Chroma curves follow the chroma multipliers and offsets of the entry, with neutral chroma. On a test video decoded with dav1d the deviation matched within 1.5% and the peak exactly. Editors can plot these instead of reimplementing film grain synthesis.
+- `stats --progress json` gives each entry's `seed`.
+
+### Fixes
+
+- `stats` builds the scaling function with the integer steps of an AV1 decoder instead of exact interpolation, so brightness levels between two scaling points show what the decoder really adds. Those values change by up to about 2%, for example 0.383 to 0.390 at brightness 224 for `generate --strength 0.5`. Values at the scaling points themselves do not change.
+
 ## 0.2.2 - 2026-10-15
 
 ### Features

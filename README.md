@@ -54,8 +54,8 @@ A build that is too new for the CPU crashes with an illegal instruction error an
 On Linux and macOS:
 
 ```sh
-tar -xzf regrain-v0.2.2-linux-x86_64-v3.tar.gz
-sudo install regrain-v0.2.2-linux-x86_64-v3/regrain /usr/local/bin/
+tar -xzf regrain-v0.2.3-linux-x86_64-v3.tar.gz
+sudo install regrain-v0.2.3-linux-x86_64-v3/regrain /usr/local/bin/
 ```
 
 The macOS binaries are not signed. If macOS refuses to open it, clear the quarantine flag once:
@@ -255,6 +255,13 @@ Prints every entry with its start and end time and the grain an AV1 decoder will
     0:03.879     0:07.508  1.133  1.820  1.856  1.718  1.298  0.603    3   0.39
 ```
 
+`--curves` also shows the grain at each brightness level from 0 to 255, for luma, Cb and Cr. Text output lists every 16th level, and JSON output lists all 256. For each level there are two values:
+
+- The deviation, the same measure as the columns above.
+- The peak, the largest grain the decoder adds at that level with the templates of the entry's seed. `apply` uses that seed on the first frame of the entry, and on every frame with `--static-grain`. Other frames get other seeds and their peaks differ slightly. The peak is exact, because regrain builds the templates bit for bit as the decoder does. Only where overlapping block edges are blended can the grain go a little beyond it.
+
+The decoder chooses the chroma grain from the luma and chroma value together, so the Cb and Cr curves are for neutral chroma, as on grey picture areas. Both measures are for a 10 bit 4:2:0 decode and come before the decoder clips the picture to its range. The deviation is also taken before the grain is rounded to whole values. On a 1080p test video of grey bands, decoded with dav1d, the deviation matched the decoder within 1.5% at every level tested, and the peak matched exactly.
+
 ## Machine readable output
 
 Every command accepts `--progress <text|json|none>`. `-q` is the same as `--progress none`.
@@ -279,14 +286,14 @@ In `start` and `progress`, `frames` and `total` count the frames the chosen scan
 
 Summary fields:
 
-| Command    | Fields                                                                                                                                                        |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `diff`     | `output`, `frames`, `frames_expected`, `scenes`, `entries`, `mismatched_frames`, `luma_deviation`, `scan`, `threads`, `fps`, `seconds`, `timings`, `warnings` |
-| `apply`    | `output`, `frames`, `grained_frames`, `entries`, `replaced_existing_grain`, `empty_table`, `verified`, `input_bytes`, `output_bytes`, `seconds`               |
-| `generate` | `output`, `entries`, `luma`, `cb`, `cr`, `correlation`                                                                                                        |
-| `export`   | `output`, `frames`, `entries`, `seconds`                                                                                                                      |
-| `remove`   | `output`, `frames`, `had_grain`, `verified`, `input_bytes`, `output_bytes`, `seconds`                                                                         |
-| `stats`    | `entries`, `luma`, `list` with `start_seconds`, `end_seconds`, `luma_dark`, `luma_mid`, `luma_bright`, `luma`, `cb`, `cr`, `lag`, `correlation` per entry     |
+| Command    | Fields                                                                                                                                                                                                                                                                                        |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `diff`     | `output`, `frames`, `frames_expected`, `scenes`, `entries`, `mismatched_frames`, `luma_deviation`, `scan`, `threads`, `fps`, `seconds`, `timings`, `warnings`                                                                                                                                 |
+| `apply`    | `output`, `frames`, `grained_frames`, `entries`, `replaced_existing_grain`, `empty_table`, `verified`, `input_bytes`, `output_bytes`, `seconds`                                                                                                                                               |
+| `generate` | `output`, `entries`, `luma`, `cb`, `cr`, `correlation`                                                                                                                                                                                                                                        |
+| `export`   | `output`, `frames`, `entries`, `seconds`                                                                                                                                                                                                                                                      |
+| `remove`   | `output`, `frames`, `had_grain`, `verified`, `input_bytes`, `output_bytes`, `seconds`                                                                                                                                                                                                         |
+| `stats`    | `entries`, `luma`, `list` with `start_seconds`, `end_seconds`, `seed`, `luma_dark`, `luma_mid`, `luma_bright`, `luma`, `cb`, `cr`, `lag`, `correlation` per entry, and with `--curves` also `curves` with `luma`, `cb`, `cr`, `luma_peak`, `cb_peak` and `cr_peak`, each a list of 256 values |
 
 `warnings` is a list of objects with a `code` and a `message`. The codes are `frames_differ`, when many frames do not match between the two videos, and `no_grain`, when the table is empty.
 

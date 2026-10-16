@@ -12,6 +12,7 @@ mod report;
 mod stats;
 mod stream;
 mod table;
+mod template;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -166,6 +167,9 @@ enum Command {
   Stats {
     /// Film grain table to describe
     table: PathBuf,
+    /// Also show the grain at every brightness level
+    #[arg(long)]
+    curves: bool,
   },
   /// Print a shell completion script
   Completions {
@@ -443,7 +447,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         ],
       );
     }
-    Command::Stats { table } => {
+    Command::Stats { table, curves } => {
       let table = table::GrainTable::read(&table)?;
       let entries = stats::table_stats(&table);
       let covered: f64 = entries.iter().filter_map(|entry| entry.end.map(|end| end - entry.start)).sum();
@@ -486,14 +490,48 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
           "{} entries, average luma grain {average:.3} on a 0 to 255 scale. Dark, mid and bright are brightness 32, 128 and 224, corr is how alike neighbouring grain pixels are.",
           entries.len()
         );
+        if curves {
+          for (number, entry) in entries.iter().enumerate() {
+            let end = entry.end.map_or_else(|| "end".to_string(), stats::clock);
+            let _ = writeln!(
+              text,
+              "\nEntry {}, {} to {}, seed {}\n{:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+              number + 1,
+              stats::clock(entry.start),
+              end,
+              entry.seed,
+              "level",
+              "luma",
+              "cb",
+              "cr",
+              "peak y",
+              "cb",
+              "cr"
+            );
+            for level in (0..256).step_by(16).chain([255]) {
+              let _ = writeln!(
+                text,
+                "{level:>6} {:>6.3} {:>6.3} {:>6.3} {:>6.2} {:>6.2} {:>6.2}",
+                entry.deviation[0][level],
+                entry.deviation[1][level],
+                entry.deviation[2][level],
+                entry.peak[0][level],
+                entry.peak[1][level],
+                entry.peak[2][level]
+              );
+            }
+          }
+        }
         print_bytes(text.as_bytes())?;
       }
+      let curve = |values: &[f64; 256]| Json::Array(values.iter().map(|&value| Json::from(value)).collect());
       let list = entries
         .iter()
         .map(|entry| {
-          Json::Object(vec![
+          let mut fields = vec![
             ("start_seconds", Json::from(entry.start)),
             ("end_seconds", Json::from(entry.end)),
+            ("seed", Json::from(entry.seed as u64)),
             ("luma_dark", Json::from(entry.luma[0])),
             ("luma_mid", Json::from(entry.luma[1])),
             ("luma_bright", Json::from(entry.luma[2])),
@@ -502,7 +540,21 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
             ("cr", Json::from(entry.chroma[1])),
             ("lag", Json::from(entry.lag as u64)),
             ("correlation", Json::from(entry.correlation)),
-          ])
+          ];
+          if curves {
+            fields.push((
+              "curves",
+              Json::Object(vec![
+                ("luma", curve(&entry.deviation[0])),
+                ("cb", curve(&entry.deviation[1])),
+                ("cr", curve(&entry.deviation[2])),
+                ("luma_peak", curve(&entry.peak[0])),
+                ("cb_peak", curve(&entry.peak[1])),
+                ("cr_peak", curve(&entry.peak[2])),
+              ]),
+            ));
+          }
+          Json::Object(fields)
         })
         .collect();
       reporter.summary(
@@ -555,7 +607,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       let entry = table
         .segments
         .first()
-        .map(|segment| stats::entry_stats(segment.start, segment.end, &segment.params));
+        .map(|segment| stats::entry_stats(segment.start, segment.end, segment.seed, &segment.params));
       match &entry {
         Some(entry) => reporter.text(format!(
           "Luma grain {:.3} {:.3} {:.3} at brightness 32, 128 and 224, cb {:.3}, cr {:.3}, corr {:.2}, wrote {}",
