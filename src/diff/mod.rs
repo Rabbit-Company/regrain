@@ -5,13 +5,13 @@ pub mod model;
 pub mod probe;
 pub mod synth;
 
-use crate::grain::{ChromaFormat, GrainParams};
 use crate::table::{GrainTable, OPEN_END, Segment, frame_start};
 use analyze::{FrameResult, Layout, Sample, Scratch, analyze};
 use anyhow::{Context, Result};
 use decode::{Chunk, ChunkDecoder, StreamSpec};
 use model::{Fit, RunStats, fit};
 use probe::{PixelFormat, ffprobe_path, probe};
+use rabbit_av1::grain::{ChromaFormat, GrainParams};
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;

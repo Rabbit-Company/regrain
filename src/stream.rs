@@ -1,14 +1,12 @@
-use crate::av1::bits::{BitWriter, write_leb128};
-use crate::av1::frame::NUM_REF_FRAMES;
-use crate::av1::obu::{CodedFrame, CodedGrain, OBU_FRAME, ObuKind, StreamParser};
-use crate::container::{Input, Output};
-use crate::framing::VideoReader;
-use crate::grain::{ChromaFormat, GrainParams};
 use crate::report::{Coded, fail};
-use crate::table::{GrainTable, OPEN_END, Segment};
+use crate::table::{GrainTable, OPEN_END, Segment, TICKS_PER_SECOND};
 use anyhow::{Context, Result};
+use rabbit_av1::bits::{BitWriter, write_leb128};
+use rabbit_av1::frame::NUM_REF_FRAMES;
+use rabbit_av1::grain::{ChromaFormat, GrainParams};
+use rabbit_av1::obu::OBU_FRAME;
+use rabbit_av1::{CodedFrame, CodedGrain, ErrorKind, Input, ObuKind, Output, StreamParser, VideoReader};
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 // A container that stores times in milliseconds can place a frame slightly
 // before the segment boundary that belongs to it.
@@ -29,7 +27,7 @@ fn scan(path: &Path, ffmpeg: &str, fps: Option<(u32, u32)>) -> Result<Scan> {
   let mut result = match scan_reader(&mut input.reader) {
     Ok(result) => result,
     Err(error) if crate::cancel::requested() => return Err(error),
-    Err(error) => return Err(input.explain(error)),
+    Err(error) => return Err(explain(&mut input, error)),
   };
   input.finish()?;
   if result.display.is_empty() {
@@ -53,7 +51,7 @@ fn scan_reader(reader: &mut VideoReader) -> Result<Scan> {
   while let Some(packet) = reader.next_packet()? {
     crate::cancel::check()?;
     packets += 1;
-    let ticks = reader.ticks(packet.pts);
+    let ticks = reader.timestamp(packet.pts, TICKS_PER_SECOND);
     let obus = parser
       .parse_packet(&packet.data)
       .with_context(|| format!("packet {packets}"))
@@ -155,42 +153,32 @@ fn segment_at(table: &GrainTable, ticks: u64) -> Option<usize> {
   table.find(ticks + TIMESTAMP_TOLERANCE).or_else(|| table.find(ticks))
 }
 
-// Reads the written stream back and checks that every shown frame carries the
-// grain it should, then lets a real decoder go through all of it.
-// Decoder messages without the addresses ffmpeg puts in front of them.
-fn decode_messages(path: &Path, ffmpeg: &str) -> Result<(bool, Vec<String>)> {
-  let output = Command::new(ffmpeg)
-    .args(["-v", "error", "-nostdin", "-c:v", "libdav1d", "-i"])
-    .arg(path)
-    .args(["-map", "0:V:0", "-f", "null", "-"])
-    .stdin(Stdio::null())
-    .output()
-    .with_context(|| format!("failed to run {ffmpeg} to decode the output"))
-    .code("ffmpeg_missing")?;
-  let messages = String::from_utf8_lossy(&output.stderr);
-  if messages.contains("libdav1d") && (messages.contains("Unknown decoder") || messages.contains("Decoder not found")) {
-    return Err(fail(
-      "verify_unavailable",
-      format!("{ffmpeg} has no libdav1d decoder, which --verify needs"),
-    ));
+// When reading fails while ffmpeg feeds the input, ffmpeg usually stopped first.
+fn explain(input: &mut Input, error: anyhow::Error) -> anyhow::Error {
+  let status = input.explain(rabbit_av1::Error::new(ErrorKind::Io, "reading stopped"));
+  if status.kind() == ErrorKind::FfmpegFailed {
+    status.into()
+  } else {
+    error
   }
-  let lines = messages
-    .lines()
-    .filter(|line| !line.trim().is_empty() && !line.starts_with("[null @") && !line.contains("Last message repeated"))
-    .map(|line| {
-      let mut rest = line.trim();
-      while rest.starts_with('[') {
-        match rest.find(']') {
-          Some(end) => rest = rest[end + 1..].trim_start(),
-          None => break,
-        }
-      }
-      rest.to_string()
-    })
-    .collect();
-  Ok((output.status.success(), lines))
 }
 
+// Decoder messages without the addresses ffmpeg puts in front of them.
+fn decode_messages(path: &Path, ffmpeg: &str) -> Result<(bool, Vec<String>)> {
+  rabbit_av1::container::decode_messages(path, ffmpeg).map_err(|error| {
+    if error.kind() == ErrorKind::DecoderMissing {
+      fail(
+        "verify_unavailable",
+        format!("{ffmpeg} has no libdav1d decoder, which --verify needs"),
+      )
+    } else {
+      error.into()
+    }
+  })
+}
+
+// Reads the written stream back and checks that every shown frame carries the
+// grain it should, then lets a real decoder go through all of it.
 fn verify(path: &Path, input: &Path, table: Option<&GrainTable>, ffmpeg: &str, fps: (u32, u32), frames_shown: usize) -> Result<()> {
   let written = scan(path, ffmpeg, Some(fps)).code("verify_failed")?;
   let format = written.format.context("the output has no sequence header").code("verify_failed")?;
@@ -216,7 +204,7 @@ fn verify(path: &Path, input: &Path, table: Option<&GrainTable>, ffmpeg: &str, f
     }
     let actual = grain.as_ref().map(|(params, _)| params.normalized(format));
     if actual != expected {
-      let seconds = *ticks as f64 / crate::table::TICKS_PER_SECOND as f64;
+      let seconds = *ticks as f64 / TICKS_PER_SECOND as f64;
       return Err(fail(
         "verify_failed",
         format!("the frame at {seconds:.3} s does not carry the grain from the table"),
@@ -377,7 +365,7 @@ impl<'a> Rewriter<'a> {
           Some(bytes)
         }
         ObuKind::FrameCopy => self.last_header.clone(),
-        ObuKind::Other => None,
+        _ => None,
       };
       out.extend_from_slice(&data[obu.prefix.clone()]);
       let bytes = replacement.as_deref().unwrap_or(payload);
@@ -411,9 +399,17 @@ pub fn apply(input_path: &Path, output_path: &Path, table: Option<&GrainTable>, 
   })();
   if let Err(error) = result {
     output.discard();
-    return Err(if crate::cancel::requested() { error } else { input.explain(error) });
+    return Err(if crate::cancel::requested() {
+      error
+    } else {
+      explain(&mut input, error)
+    });
   }
-  input.finish()?;
+  // A cancelled run stops before ffmpeg muxes the container.
+  if let Err(error) = input.finish().map_err(anyhow::Error::from).and_then(|()| crate::cancel::check()) {
+    output.discard();
+    return Err(error);
+  }
   let written = output.finish()?;
   if let Err(error) = crate::cancel::check() {
     written.discard();
@@ -445,7 +441,7 @@ mod tests {
   use std::io::Cursor;
   use std::panic::{AssertUnwindSafe, catch_unwind};
 
-  const TABLE: &str = "filmgrn1\nE 0 2000000 1 100 1\n\tp 2 7 0 10 0 1 128 192 256 128 192 256\n\tsY 3  0 20 100 60 255 25\n\tsCb 2 0 20 255 30\n\tsCr 1 128 25\n\tcY 2 4 6 4 2 4 10 24 10 4 6 26\n\tcCb 0 0 4 0 0 0 6 16 6 0 4 18 20\n\tcCr 0 0 0 0 0 0 0 0 0 0 0 0 0\nE 2000000 9223372036854775807 1 200 1\n\tp 0 6 0 11 0 1 128 192 256 128 192 256\n\tsY 1  128 40\n\tsCb 0\n\tsCr 0\n\tcY\n\tcCb 0\n\tcCr 0\n";
+  const TABLE: &str = "filmgrn1\nE 0 2000000 1 100 1\n  p 2 7 0 10 0 1 128 192 256 128 192 256\n  sY 3 0 20 100 60 255 25\n  sCb 2 0 20 255 30\n  sCr 1 128 25\n  cY 2 4 6 4 2 4 10 24 10 4 6 26\n  cCb 0 0 4 0 0 0 6 16 6 0 4 18 20\n  cCr 0 0 0 0 0 0 0 0 0 0 0 0 0\nE 2000000 9223372036854775807 1 200 1\n  p 0 6 0 11 0 1 128 192 256 128 192 256\n  sY 1 128 40\n  sCb 0\n  sCr 0\n  cY\n  cCb 0\n  cCr 0\n";
 
   // Runs a stream through everything apply and export do. Errors are fine, panics are not.
   fn exercise(data: &[u8], table: &GrainTable) {

@@ -1,7 +1,7 @@
 use super::analyze::{BINS, BUCKETS, CROSS, LAGS, PlaneStats, ar_offsets, bucket_variance, lag_index};
 use super::probe::PixelFormat;
 use super::synth::simulate;
-use crate::grain::{GrainParams, MAX_CHROMA_POINTS, MAX_LUMA_POINTS};
+use rabbit_av1::grain::{GrainParams, MAX_CHROMA_POINTS, MAX_LUMA_POINTS};
 
 const MIN_BIN_BLOCKS: u64 = 16;
 const SMOOTHING_BLOCKS: f64 = 150.0;

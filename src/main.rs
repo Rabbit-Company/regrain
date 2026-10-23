@@ -1,20 +1,16 @@
 #![allow(clippy::needless_range_loop)]
 
-mod av1;
 mod cancel;
-mod container;
+mod check;
 mod diff;
-mod framing;
 mod generate;
-mod grain;
-mod ivf;
 mod report;
 mod stats;
 mod stream;
 mod table;
 mod template;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use report::{Coded, Json, Progress, error_code, event, fail};
 use std::path::{Path, PathBuf};
@@ -170,6 +166,17 @@ enum Command {
     /// Also show the grain at every brightness level
     #[arg(long)]
     curves: bool,
+  },
+  /// Check a film grain table for anything AV1 forbids or that changes the grain
+  Check {
+    /// Film grain table to check
+    table: PathBuf,
+    /// Write a corrected table here, when every error can be corrected
+    #[arg(long, value_name = "OUTPUT")]
+    fix: Option<PathBuf>,
+    /// Overwrite the --fix output if it exists
+    #[arg(short = 'y', long)]
+    overwrite: bool,
   },
   /// Print a shell completion script
   Completions {
@@ -563,6 +570,84 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
           ("entries", Json::from(entries.len())),
           ("luma", Json::from(average)),
           ("list", Json::Array(list)),
+        ],
+      );
+    }
+    Command::Check { table, fix, overwrite } => {
+      let text = std::fs::read_to_string(&table)
+        .with_context(|| format!("failed to read {}", table.display()))
+        .code("table_not_found")?;
+      let document = table::parse_document(&text)
+        .with_context(|| format!("invalid film grain table {}", table.display()))
+        .code("invalid_table")?;
+      let report = check::check(&document);
+      for finding in &report.findings {
+        if reporter.mode == Progress::Json {
+          event(
+            "finding",
+            vec![
+              ("severity", Json::from(finding.severity.name())),
+              ("code", Json::from(finding.code)),
+              ("entry", Json::from(finding.entry)),
+              ("line", Json::from(finding.line)),
+              ("start_seconds", Json::from(finding.start_seconds())),
+              ("message", Json::from(finding.message.as_str())),
+              ("fixable", Json::from(finding.fixable)),
+            ],
+          );
+        }
+        let place = match (finding.entry, finding.start_seconds()) {
+          (Some(entry), Some(start)) => format!("entry {entry} on line {} at {}", finding.line, stats::clock(start)),
+          _ => format!("line {}", finding.line),
+        };
+        reporter.text(format!(
+          "{}: {place}: {}{}",
+          finding.severity.name(),
+          finding.message,
+          if fix.is_some() && finding.fixable { " (fixed)" } else { "" }
+        ));
+      }
+      let errors = report.count(check::Severity::Error);
+      let warnings = report.count(check::Severity::Warning);
+      if let Some(output) = &fix {
+        let Some(fixed) = &report.fixed else {
+          let unfixable = report
+            .findings
+            .iter()
+            .filter(|finding| finding.severity == check::Severity::Error && !finding.fixable)
+            .count();
+          return Err(fail(
+            "invalid_table",
+            format!("{unfixable} of the {errors} errors cannot be corrected, so nothing was written"),
+          ));
+        };
+        check_output(&table, output, overwrite)?;
+        fixed.write(output)?;
+      } else if errors > 0 {
+        return Err(fail(
+          "invalid_table",
+          format!("{errors} errors and {warnings} warnings in {}", table.display()),
+        ));
+      }
+      reporter.text(match (&fix, errors + warnings) {
+        (Some(output), _) => format!(
+          "{errors} errors and {warnings} warnings in {} entries, wrote {}",
+          report.entries,
+          output.display()
+        ),
+        (None, 0) => format!("No problems in {} entries", report.entries),
+        (None, _) => format!("{warnings} warnings in {} entries", report.entries),
+      });
+      reporter.summary(
+        "check",
+        vec![
+          ("entries", Json::from(report.entries)),
+          ("errors", Json::from(errors)),
+          ("warnings", Json::from(warnings)),
+          (
+            "output",
+            Json::from(fix.as_deref().map(|output| output.to_string_lossy().into_owned())),
+          ),
         ],
       );
     }

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const TABLE: &str = "filmgrn1\nE 0 5000000 1 100 1\n\tp 2 7 0 10 0 1 128 192 256 128 192 256\n\tsY 3  0 20 100 60 255 25\n\tsCb 2 0 20 255 30\n\tsCr 1 128 25\n\tcY 2 4 6 4 2 4 10 24 10 4 6 26\n\tcCb 0 0 4 0 0 0 6 16 6 0 4 18 20\n\tcCr 0 0 0 0 0 0 0 0 0 0 0 0 0\nE 5000000 9223372036854775807 1 200 1\n\tp 0 6 0 11 0 1 128 192 256 128 192 256\n\tsY 1  128 40\n\tsCb 0\n\tsCr 0\n\tcY\n\tcCb 0\n\tcCr 0\n";
+const TABLE: &str = "filmgrn1\nE 0 5000000 1 100 1\n  p 2 7 0 10 0 1 128 192 256 128 192 256\n  sY 3 0 20 100 60 255 25\n  sCb 2 0 20 255 30\n  sCr 1 128 25\n  cY 2 4 6 4 2 4 10 24 10 4 6 26\n  cCb 0 0 4 0 0 0 6 16 6 0 4 18 20\n  cCr 0 0 0 0 0 0 0 0 0 0 0 0 0\nE 5000000 9223372036854775807 1 200 1\n  p 0 6 0 11 0 1 128 192 256 128 192 256\n  sY 1 128 40\n  sCb 0\n  sCr 0\n  cY\n  cCb 0\n  cCr 0\n";
 
 fn regrain(args: &[&str]) -> std::process::Output {
   Command::new(env!("CARGO_BIN_EXE_regrain"))
@@ -596,5 +596,91 @@ fn stats_curves_match_the_decoder() {
       .unwrap();
     assert_eq!(largest as f64 / 4.0, curve[0], "{key}");
   }
+  let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn check_reports_findings_and_fixes_tables() {
+  let dir = workspace("check");
+  let good = path(&dir, "good.tbl");
+  std::fs::write(&good, TABLE).unwrap();
+  let clean = regrain(&["check", &good, "--progress", "json"]);
+  assert!(clean.status.success());
+  let stdout = String::from_utf8(clean.stdout).unwrap();
+  assert_eq!(
+    stdout,
+    "{\"event\":\"summary\",\"command\":\"check\",\"entries\":2,\"errors\":0,\"warnings\":0,\"output\":null}\n"
+  );
+
+  // Seed 0 and luma points out of order can be fixed, an empty entry is dropped.
+  let fixable = TABLE
+    .replacen("E 0 5000000 1 100 1", "E 0 5000000 1 0 1", 1)
+    .replacen("sY 3 0 20 100 60 255 25", "sY 3 100 60 0 20 255 25", 1)
+    .replacen("E 5000000 ", "E 5000000 5000000 1 9 1\nE 5000000 ", 1);
+  let broken = path(&dir, "broken.tbl");
+  std::fs::write(&broken, &fixable).unwrap();
+  let failed = regrain(&["check", &broken, "--progress", "json"]);
+  assert_eq!(failed.status.code(), Some(1));
+  let stdout = String::from_utf8(failed.stdout).unwrap();
+  let lines: Vec<&str> = stdout.lines().collect();
+  assert_eq!(lines.len(), 4, "{stdout}");
+  assert!(
+    lines[0].starts_with(
+      "{\"event\":\"finding\",\"severity\":\"error\",\"code\":\"points_out_of_order\",\"entry\":1,\"line\":2,\"start_seconds\":0.0,"
+    ),
+    "{stdout}"
+  );
+  assert!(lines[1].contains("\"code\":\"zero_seed\""), "{stdout}");
+  assert!(lines[2].contains("\"code\":\"empty_entry\",\"entry\":2,\"line\":10,"), "{stdout}");
+  assert!(lines[3].starts_with("{\"event\":\"error\",\"code\":\"invalid_table\","), "{stdout}");
+
+  let fixed = path(&dir, "fixed.tbl");
+  let result = regrain(&["check", &broken, "--fix", &fixed, "--progress", "json"]);
+  assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
+  let summary = String::from_utf8(result.stdout).unwrap();
+  assert!(
+    summary.ends_with(&format!("\"errors\":1,\"warnings\":2,\"output\":\"{fixed}\"}}\n")),
+    "{summary}"
+  );
+  let text = std::fs::read_to_string(&fixed).unwrap();
+  assert!(
+    text.contains("E 0 5000000 1 7391 1") && text.contains("sY 3 0 20 100 60 255 25"),
+    "{text}"
+  );
+  assert!(regrain(&["check", &fixed, "-q"]).status.success());
+  let exists = regrain(&["check", &broken, "--fix", &fixed, "--progress", "json"]);
+  assert!(String::from_utf8_lossy(&exists.stdout).contains("\"code\":\"output_exists\""));
+
+  // An error --fix cannot correct leaves nothing behind.
+  std::fs::write(&broken, TABLE.replacen("p 2 7 0 10", "p 2 7 0 12", 1)).unwrap();
+  let unfixable = path(&dir, "unfixable.tbl");
+  let result = regrain(&["check", &broken, "--fix", &unfixable]);
+  assert_eq!(result.status.code(), Some(1));
+  let stderr = String::from_utf8(result.stderr).unwrap();
+  assert!(
+    stderr.contains("error: entry 1 on line 2 at 0:00.000: scaling_shift is 12, AV1 allows 8 to 11"),
+    "{stderr}"
+  );
+  assert!(!Path::new(&unfixable).exists());
+
+  // Comments before filmgrn1 are read, reported for the whole table and dropped by --fix.
+  std::fs::write(&broken, format!("# made by FGSEditor\n{TABLE}")).unwrap();
+  let commented = regrain(&["check", &broken, "--progress", "json"]);
+  assert!(commented.status.success());
+  let stdout = String::from_utf8(commented.stdout).unwrap();
+  assert!(
+    stdout.starts_with(
+      "{\"event\":\"finding\",\"severity\":\"warning\",\"code\":\"preamble\",\"entry\":null,\"line\":1,\"start_seconds\":null,"
+    ),
+    "{stdout}"
+  );
+  let uncommented = path(&dir, "uncommented.tbl");
+  assert!(regrain(&["check", &broken, "--fix", &uncommented, "-q"]).status.success());
+  assert_eq!(std::fs::read_to_string(&uncommented).unwrap(), TABLE);
+
+  std::fs::write(&broken, "filmgrn1\nE 0 9 1 0 1\n\tsY 1 x\n").unwrap();
+  let syntax = regrain(&["check", &broken, "--progress", "json"]);
+  assert!(String::from_utf8_lossy(&syntax.stdout).contains("\"code\":\"invalid_table\",\"message\":\"invalid film grain table"));
+  assert!(String::from_utf8_lossy(&syntax.stdout).contains("line 3: invalid number"));
   let _ = std::fs::remove_dir_all(&dir);
 }

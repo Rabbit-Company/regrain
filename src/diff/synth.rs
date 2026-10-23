@@ -1,4 +1,4 @@
-use crate::grain::GrainParams;
+use rabbit_av1::grain::GrainParams;
 
 const SIZE: usize = 160;
 const MARGIN: usize = 12;

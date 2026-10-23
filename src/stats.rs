@@ -1,7 +1,7 @@
 use crate::diff::synth::simulate;
-use crate::grain::GrainParams;
 use crate::table::{GrainTable, OPEN_END, TICKS_PER_SECOND};
 use crate::template::extremes;
+use rabbit_av1::grain::GrainParams;
 
 // Stats describe a 10 bit 4:2:0 decode, the usual target of AV1 encodes.
 const DEPTH: u8 = 10;

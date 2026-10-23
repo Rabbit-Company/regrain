@@ -10,10 +10,11 @@ regrain measures the film grain a denoiser removed from a video and puts it back
 | `export`      | Reads the film grain table out of an AV1 video                                      |
 | `remove`      | Removes film grain synthesis from an AV1 video                                      |
 | `stats`       | Shows what a film grain table holds, entry by entry                                 |
+| `check`       | Finds what AV1 forbids in a film grain table and what changes its grain             |
 | `completions` | Prints a completion script for bash, zsh, fish, elvish or PowerShell                |
 | `manual`      | Prints the manual page in roff format                                               |
 
-Tables use the `filmgrn1` text format that libaom, SVT-AV1 and grav1synth also read and write.
+Tables use the `filmgrn1` text format that libaom, SVT-AV1 and grav1synth also read and write, with times in units of 1/10 000 000 second. regrain writes them in the layout of the FGS table convention: parameter lines indented by two spaces and single spaces between values, which libaom, SVT-AV1 and grav1synth read as they read libaom's own layout with tabs. It reads both layouts, and skips comments above the `filmgrn1` line. regrain never writes such comments, because libaom then encodes without grain and SVT-AV1 and grav1synth refuse the table. [docs/filmgrn1.md](docs/filmgrn1.md) describes the format and what libaom, SVT-AV1 and grav1synth do with a table.
 
 ## Typical workflow
 
@@ -54,8 +55,8 @@ A build that is too new for the CPU crashes with an illegal instruction error an
 On Linux and macOS:
 
 ```sh
-tar -xzf regrain-v0.2.3-linux-x86_64-v3.tar.gz
-sudo install regrain-v0.2.3-linux-x86_64-v3/regrain /usr/local/bin/
+tar -xzf regrain-v0.3.0-linux-x86_64-v3.tar.gz
+sudo install regrain-v0.3.0-linux-x86_64-v3/regrain /usr/local/bin/
 ```
 
 The macOS binaries are not signed. If macOS refuses to open it, clear the quarantine flag once:
@@ -209,7 +210,7 @@ Tables from any tool are adjusted where AV1 requires it. For example, in 4:2:0 v
 regrain export <INPUT> -o <TABLE>
 ```
 
-Consecutive frames with the same parameters become one table entry. A table exported from a video that regrain wrote is identical to the table that was applied.
+Consecutive frames with the same parameters become one table entry. A table exported from a video that regrain wrote has the same entries as the table that was applied, and is identical to it when regrain wrote that table too.
 
 ## remove
 
@@ -262,6 +263,46 @@ Prints every entry with its start and end time and the grain an AV1 decoder will
 
 The decoder chooses the chroma grain from the luma and chroma value together, so the Cb and Cr curves are for neutral chroma, as on grey picture areas. Both measures are for a 10 bit 4:2:0 decode and come before the decoder clips the picture to its range. The deviation is also taken before the grain is rounded to whole values. On a 1080p test video of grey bands, decoded with dav1d, the deviation matched the decoder within 1.5% at every level tested, and the peak matched exactly.
 
+## check
+
+```sh
+regrain check <TABLE>
+regrain check <TABLE> --fix <OUTPUT>
+```
+
+Lists every problem in a table, each with its entry, the line the entry starts on and its start time. Entries are counted from 1 over every `E` line, including entries without grain. A problem with the table as a whole, such as `preamble`, has only a line.
+
+```
+error: entry 3 on line 18 at 0:07.508: scaling_shift is 12, AV1 allows 8 to 11
+warning: entry 5 on line 34 at 0:12.000: no entry covers 0:11.000 to 0:12.000, so those frames get no grain
+```
+
+`apply` refuses a table that has errors. Warnings mark tables that `apply` accepts but where the grain is not what the table seems to say.
+
+| Code                    | Severity | Meaning                                                                                                                                      | `--fix`                 |
+| ----------------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `out_of_range`          | error    | A parameter is outside what AV1 allows, such as `scaling_shift` 12                                                                           | No                      |
+| `too_many_points`       | error    | More than 14 luma or 10 chroma scaling points                                                                                                | No                      |
+| `points_out_of_order`   | error    | Scaling points are not in order of brightness, or two share one brightness                                                                   | Sorts them, if distinct |
+| `coefficient_count`     | error    | The number of filter coefficients does not fit the lag                                                                                       | No                      |
+| `overlap`               | error    | An entry starts before the one before it ends                                                                                                | No                      |
+| `empty_entry`           | warning  | An entry ends where it starts, so it covers no frame. It is ignored, as libaom ignores it                                                    | Drops it                |
+| `gap`                   | warning  | No entry covers a stretch of time, so it gets no grain. An entry with `apply_grain` 0 marks a gap as meant                                   | No                      |
+| `chroma_without_luma`   | warning  | Chroma points without luma points. 4:2:0 AV1 drops the chroma grain then                                                                     | Drops the points        |
+| `chroma_points_ignored` | warning  | Chroma is scaled from luma, so its own points are ignored                                                                                    | Drops the points        |
+| `zero_seed`             | warning  | Seed 0 makes the decoder repeat one value, so luma gets a constant offset instead of grain                                                   | Uses seed 7391          |
+| `unstable_filter`       | warning  | The autoregressive filter is unstable: the grain grows across the decoder's template, so grain blocks differ in strength and look patchy     | No                      |
+| `reused_parameters`     | warning  | `update_parameters` is 0, so the entry takes the parameters of the entry before it, as regrain reads it. libaom gives such an entry no grain | Writes them out         |
+| `preamble`              | warning  | Comments come before `filmgrn1`. libaom then encodes without grain, and SVT-AV1 and grav1synth refuse the table                              | Drops them              |
+
+A filter counts as unstable when its grain, grown over a template of the decoder's size, is more than 1.2 times as strong in the bottom rows a decoder reads as in the top ones. Strong grain from a stable filter stays below 1.04: the most on 1133 entries measured by `diff` from an anime episode and on Netflix's 1868 entries for Dune: Part Two. Coefficients that add up to exactly the divisor give 1.2 to 1.4, and anything above that grows fast.
+
+`--fix` writes a corrected table when every error can be corrected, and nothing otherwise. The corrected table also leaves out what the bitstream cannot carry, such as coefficients for planes without grain, the same way `apply` stores it. A table exported from a video after `apply` is then identical to it.
+
+A table does not say which chroma format it is for, so `check` assumes 4:2:0, the format of nearly every AV1 encode.
+
+The exit code is 0 when the table has no errors, or when `--fix` wrote a corrected table, and 1 otherwise.
+
 ## Machine readable output
 
 Every command accepts `--progress <text|json|none>`. `-q` is the same as `--progress none`.
@@ -272,6 +313,7 @@ With `--progress json`, regrain writes one JSON object per line to standard outp
 | ---------- | ------------- | ----------------------------- |
 | `start`    | `diff`        | After both videos were probed |
 | `progress` | `diff`        | About twice a second          |
+| `finding`  | `check`       | For every problem found       |
 | `summary`  | every command | When the command succeeded    |
 | `error`    | every command | When the command failed       |
 
@@ -284,6 +326,23 @@ With `--progress json`, regrain writes one JSON object per line to standard outp
 
 In `start` and `progress`, `frames` and `total` count the frames the chosen scan will measure. Values that are not known are `null`.
 
+A `finding` has `severity` (`error` or `warning`), `code`, `entry`, `line`, `start_seconds`, `message` and `fixable`. `entry` and `start_seconds` are `null` for a problem with the table as a whole:
+
+```json
+{
+  "event": "finding",
+  "severity": "error",
+  "code": "points_out_of_order",
+  "entry": 1,
+  "line": 2,
+  "start_seconds": 0.0,
+  "message": "luma scaling points are not in order of brightness",
+  "fixable": true
+}
+```
+
+When the table has errors and no corrected table was written, the findings are followed by an `error` event with the code `invalid_table`, otherwise by the summary.
+
 Summary fields:
 
 | Command    | Fields                                                                                                                                                                                                                                                                                        |
@@ -293,6 +352,7 @@ Summary fields:
 | `generate` | `output`, `entries`, `luma`, `cb`, `cr`, `correlation`                                                                                                                                                                                                                                        |
 | `export`   | `output`, `frames`, `entries`, `seconds`                                                                                                                                                                                                                                                      |
 | `remove`   | `output`, `frames`, `had_grain`, `verified`, `input_bytes`, `output_bytes`, `seconds`                                                                                                                                                                                                         |
+| `check`    | `entries`, `errors`, `warnings`, `output`                                                                                                                                                                                                                                                     |
 | `stats`    | `entries`, `luma`, `list` with `start_seconds`, `end_seconds`, `seed`, `luma_dark`, `luma_mid`, `luma_bright`, `luma`, `cb`, `cr`, `lag`, `correlation` per entry, and with `--curves` also `curves` with `luma`, `cb`, `cr`, `luma_peak`, `cb_peak` and `cr_peak`, each a list of 256 values |
 
 `warnings` is a list of objects with a `code` and a `message`. The codes are `frames_differ`, when many frames do not match between the two videos, and `no_grain`, when the table is empty.
@@ -303,7 +363,7 @@ The exit code is 0 on success, 130 when cancelled with Ctrl+C or SIGTERM, and 1 
 | ---------------------- | -------------------------------------------------------------------------------------------------- |
 | `input_not_found`      | An input video does not exist                                                                      |
 | `table_not_found`      | The table passed to `apply` cannot be read                                                         |
-| `invalid_table`        | The table is not a valid film grain table                                                          |
+| `invalid_table`        | The table is not a valid film grain table, or `check` found errors in it                           |
 | `output_exists`        | The output exists and `--overwrite` was not given                                                  |
 | `output_is_input`      | The output path is one of the inputs                                                               |
 | `same_input`           | `diff` was given the same file twice                                                               |

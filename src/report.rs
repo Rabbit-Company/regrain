@@ -36,11 +36,19 @@ pub trait Coded<T> {
   fn code(self, code: &'static str) -> anyhow::Result<T>;
 }
 
+// Errors from rabbit-av1 carry a code of their own, as a Failure does.
+fn cause_code(cause: &(dyn std::error::Error + 'static)) -> Option<&'static str> {
+  if let Some(failure) = cause.downcast_ref::<Failure>() {
+    return Some(failure.code);
+  }
+  cause.downcast_ref::<rabbit_av1::Error>().map(rabbit_av1::Error::code)
+}
+
 impl<T, E: Into<anyhow::Error>> Coded<T> for Result<T, E> {
   fn code(self, code: &'static str) -> anyhow::Result<T> {
     self.map_err(|error| {
       let error = error.into();
-      if error.chain().any(|cause| cause.is::<Failure>()) {
+      if error.chain().any(|cause| cause_code(cause).is_some()) {
         error
       } else {
         fail(code, format!("{error:#}"))
@@ -50,10 +58,7 @@ impl<T, E: Into<anyhow::Error>> Coded<T> for Result<T, E> {
 }
 
 pub fn error_code(error: &anyhow::Error) -> &'static str {
-  error
-    .chain()
-    .find_map(|cause| cause.downcast_ref::<Failure>())
-    .map_or("error", |failure| failure.code)
+  error.chain().find_map(cause_code).unwrap_or("error")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -206,5 +211,19 @@ mod tests {
     assert_eq!(error_code(&error), "io_error");
     assert_eq!(error.to_string(), "disk full");
     assert_eq!(error_code(&anyhow::anyhow!("other")), "error");
+  }
+
+  #[test]
+  fn keeps_rabbit_av1_codes() {
+    let missing = std::fs::File::open("/does/not/exist").unwrap_err();
+    let inner: Result<(), rabbit_av1::Error> = Err(rabbit_av1::Error::from(missing).context("failed to open x.ivf"));
+    let error = inner
+      .code("invalid_table")
+      .map_err(|error| error.context("while applying"))
+      .unwrap_err();
+    assert_eq!(error_code(&error), "io_error");
+    let text = format!("{error:#}");
+    assert!(text.starts_with("while applying: failed to open x.ivf: "), "{text}");
+    assert_eq!(text.matches("No such file").count(), 1, "{text}");
   }
 }

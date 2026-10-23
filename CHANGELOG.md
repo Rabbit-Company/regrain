@@ -2,6 +2,26 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.0 - 2026-10-23
+
+### Features
+
+- `check` lists every problem in a film grain table, with the entry, the line it starts on and its start time. Errors are what `apply` refuses, such as parameters outside what AV1 allows, scaling points out of order or overlapping entries. Warnings mark tables that `apply` accepts with other grain than they seem to describe: chroma points that 4:2:0 AV1 drops, seed 0, which gives luma a constant offset instead of grain, an unstable filter, whose grain grows across the template and looks patchy, and stretches without any entry. With `--progress json` every problem is a `finding` event with a stable code. `--fix` writes a corrected table when every error can be corrected.
+- Errors in a table name the line they are on.
+- Tables are written in the layout of the FGS table convention, with parameter lines indented by two spaces and single spaces between values. libaom, SVT-AV1 and grav1synth read it as they read libaom's layout with tabs, which regrain still reads.
+- Comments above the `filmgrn1` line are skipped. `check` warns about them, because libaom then encodes without grain and SVT-AV1 and grav1synth refuse the table, and `--fix` drops them. Other versions such as `filmgrn2` and a second header are refused.
+- `check` warns about entries with `update_parameters` 0. regrain gives them the parameters of the entry before, as the convention says, but libaom gives them no grain. `--fix` writes the parameters out.
+
+### Fixes
+
+- Tables with entries that end where they start are read. Such entries cover no frame and are ignored, as libaom ignores them. Before, `apply` and `stats` refused the whole table. Netflix's film grain table for Dune: Part Two has 30 of them.
+- When ffmpeg fails at the end of reading the input, `apply` and `remove` delete the output they were writing instead of leaving a `.part` file behind.
+
+### Other changes
+
+- [docs/filmgrn1.md](docs/filmgrn1.md) describes the table format as regrain reads and writes it, and what libaom, SVT-AV1 and grav1synth do with a table, as measured.
+- The AV1 parsing, IVF, Annex B and container code moved into the [rabbit-av1](https://crates.io/crates/rabbit-av1) library, which retone uses too. Outputs, error codes and messages stay the same.
+
 ## 0.2.3 - 2026-10-16
 
 ### Features

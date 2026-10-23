@@ -1,9 +1,9 @@
 use crate::diff::model::ar_for_correlation;
 use crate::diff::synth::{TemplateStats, simulate};
-use crate::grain::{GrainParams, MAX_LUMA_POINTS};
 use crate::report::fail;
 use crate::table::{GrainTable, OPEN_END, Segment};
 use anyhow::Result;
+use rabbit_av1::grain::{GrainParams, MAX_LUMA_POINTS};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Size {

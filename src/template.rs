@@ -1,4 +1,4 @@
-use crate::grain::GrainParams;
+use rabbit_av1::grain::GrainParams;
 
 const LUMA_W: usize = 82;
 const LUMA_H: usize = 73;
