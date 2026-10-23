@@ -216,6 +216,7 @@ mod tests {
   #[test]
   fn keeps_rabbit_av1_codes() {
     let missing = std::fs::File::open("/does/not/exist").unwrap_err();
+    let reason = missing.to_string();
     let inner: Result<(), rabbit_av1::Error> = Err(rabbit_av1::Error::from(missing).context("failed to open x.ivf"));
     let error = inner
       .code("invalid_table")
@@ -224,6 +225,6 @@ mod tests {
     assert_eq!(error_code(&error), "io_error");
     let text = format!("{error:#}");
     assert!(text.starts_with("while applying: failed to open x.ivf: "), "{text}");
-    assert_eq!(text.matches("No such file").count(), 1, "{text}");
+    assert_eq!(text.matches(reason.as_str()).count(), 1, "{text}");
   }
 }
