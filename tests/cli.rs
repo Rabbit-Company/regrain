@@ -604,12 +604,12 @@ fn check_reports_findings_and_fixes_tables() {
   let dir = workspace("check");
   let good = path(&dir, "good.tbl");
   std::fs::write(&good, TABLE).unwrap();
-  let clean = regrain(&["check", &good, "--progress", "json"]);
+  let clean = regrain(&["check", &good, "--progress", "json", "--threads", "2"]);
   assert!(clean.status.success());
   let stdout = String::from_utf8(clean.stdout).unwrap();
   assert_eq!(
     stdout,
-    "{\"event\":\"summary\",\"command\":\"check\",\"entries\":2,\"errors\":0,\"warnings\":0,\"output\":null}\n"
+    "{\"event\":\"start\",\"command\":\"check\",\"entries\":2,\"threads\":2}\n{\"event\":\"summary\",\"command\":\"check\",\"entries\":2,\"errors\":0,\"warnings\":0,\"output\":null}\n"
   );
 
   // Seed 0 and luma points out of order can be fixed, an empty entry is dropped.
@@ -622,7 +622,11 @@ fn check_reports_findings_and_fixes_tables() {
   let failed = regrain(&["check", &broken, "--progress", "json"]);
   assert_eq!(failed.status.code(), Some(1));
   let stdout = String::from_utf8(failed.stdout).unwrap();
-  let lines: Vec<&str> = stdout.lines().collect();
+  assert!(
+    stdout.starts_with("{\"event\":\"start\",\"command\":\"check\",\"entries\":3,"),
+    "{stdout}"
+  );
+  let lines: Vec<&str> = stdout.lines().skip(1).collect();
   assert_eq!(lines.len(), 4, "{stdout}");
   assert!(
     lines[0].starts_with(
@@ -671,7 +675,7 @@ fn check_reports_findings_and_fixes_tables() {
   assert!(commented.status.success());
   let stdout = String::from_utf8(commented.stdout).unwrap();
   assert!(
-    stdout.starts_with(
+    stdout.lines().nth(1).unwrap().starts_with(
       "{\"event\":\"finding\",\"severity\":\"warning\",\"code\":\"preamble\",\"entry\":null,\"line\":1,\"start_seconds\":null,"
     ),
     "{stdout}"

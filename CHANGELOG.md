@@ -2,6 +2,18 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.1 - 2026-10-23
+
+### Features
+
+- `stats` and `check` run on every available thread, or as many as `-j, --threads` gives, and report `start` and `progress` events with `--progress json` and a progress line on standard error with text output.
+- With `--progress json`, the output of `check` now begins with a `start` event, before the first `finding`. A table that is done before the first progress report gets no `progress` events.
+
+### Performance
+
+- `stats` builds its grain templates with the rows above each row added up in loops that vectorize, and draws the Gaussian values its templates share only once. `check` simulates filters the same way. On a table with an entry for every frame of a two hour film, about 172,000 entries, `stats` went from about 16 minutes to 16 seconds and `check` from 160 to 7 seconds with 16 threads. The output is the same to the last digit.
+- `stats` keeps the grain at every brightness level only with `--curves`, and writes its JSON summary entry by entry. A 172,000 entry table with `--curves` took 10.6 GB of memory and now takes 2.2 GB, and 150 MB without `--curves`.
+
 ## 0.3.0 - 2026-10-23
 
 ### Features

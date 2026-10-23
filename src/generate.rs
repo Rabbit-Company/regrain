@@ -243,7 +243,7 @@ mod tests {
         size,
         chroma: 0.4,
       });
-      let stats = entry_stats(0, OPEN_END, 7391, &params);
+      let stats = entry_stats(0, OPEN_END, 7391, &params, false);
       assert!((stats.luma[1] - 1.5).abs() < 0.03, "{size:?} {}", stats.luma[1]);
       assert!((stats.chroma[0] - 0.4).abs() < 0.03, "{size:?} {:?}", stats.chroma);
       assert!(
@@ -266,7 +266,7 @@ mod tests {
         size: Size::Fine,
         chroma: 0.0,
       });
-      entry_stats(0, OPEN_END, 7391, &params)
+      entry_stats(0, OPEN_END, 7391, &params, false)
     };
     let (low, high) = (at(400), at(3200));
     // Shot noise grows with the square root of the ISO, 2.8 times for 8 times the ISO.

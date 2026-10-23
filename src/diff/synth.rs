@@ -21,8 +21,86 @@ impl Gaussian {
   }
 }
 
+// The Gaussian values of every round, which are the same for every filter, so
+// they are drawn once instead of for each entry a table describes. A round
+// reads luma, then Cb, then Cr, each only when it has grain.
+fn gaussian_rounds() -> &'static [Vec<i32>] {
+  static ROUNDS_VALUES: std::sync::OnceLock<Vec<Vec<i32>>> = std::sync::OnceLock::new();
+  ROUNDS_VALUES.get_or_init(|| {
+    // 4:4:4 chroma planes are the largest a round can read.
+    let chroma = ((SIZE - 4) + 3) * ((SIZE - 4) + 3);
+    (0..ROUNDS)
+      .map(|round| {
+        let mut gaussian = Gaussian(0x9e37_79b9_7f4a_7c15 ^ (round + 1).wrapping_mul(0xd1b5_4a32_d192_ed03));
+        (0..SIZE * SIZE + 2 * chroma).map(|_| gaussian.next()).collect()
+      })
+      .collect()
+  })
+}
+
 fn round2(value: i32, shift: u32) -> i32 {
   if shift == 0 { value } else { (value + (1 << (shift - 1))) >> shift }
+}
+
+// Runs the autoregressive filter of section 7.18.3.3 over rows 3 and below of a
+// grain plane, columns 3 to width - 3, adding `extra(x, y)` to each sum, as the
+// chroma filter does with the luma grain. The rows above a row are final before
+// it is filtered, so their share of every sum is added up first in loops that
+// vectorize, and only the taps of the row itself run pixel by pixel. The sums
+// are the same integers as with the taps in specification order.
+#[allow(clippy::too_many_arguments)]
+pub fn auto_regress(
+  plane: &mut [i32],
+  width: usize,
+  height: usize,
+  lag: i32,
+  coeffs: &[i8],
+  shift: u32,
+  (min, max): (i32, i32),
+  mut extra: impl FnMut(usize, usize) -> i32,
+) {
+  let lag = lag as usize;
+  let coeff = |pos: usize| coeffs.get(pos).copied().unwrap_or(0) as i32;
+  // Taps of the rows above as (row above, column offset + lag, coefficient), and
+  // of the row itself, left of the pixel, as (column offset + lag, coefficient).
+  let mut above = Vec::new();
+  let mut left = Vec::new();
+  let mut pos = 0;
+  for dy in (1..=lag).rev() {
+    for dx in 0..=2 * lag {
+      if coeff(pos) != 0 {
+        above.push((dy, dx, coeff(pos)));
+      }
+      pos += 1;
+    }
+  }
+  for dx in 0..lag {
+    if coeff(pos) != 0 {
+      left.push((dx, coeff(pos)));
+    }
+    pos += 1;
+  }
+  let columns = width - 6;
+  let mut sums = vec![0i32; columns];
+  for y in 3..height {
+    sums.fill(0);
+    for &(dy, dx, c) in &above {
+      let start = (y - dy) * width + 3 + dx - lag;
+      for (sum, &value) in sums.iter_mut().zip(&plane[start..start + columns]) {
+        *sum += c * value;
+      }
+    }
+    let row = y * width;
+    for (column, &sum) in sums.iter().enumerate() {
+      let x = column + 3;
+      let mut sum = sum + extra(x, y);
+      for &(dx, c) in &left {
+        sum += c * plane[row + x + dx - lag];
+      }
+      let index = row + x;
+      plane[index] = (plane[index] + round2(sum, shift)).clamp(min, max);
+    }
+  }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -77,30 +155,22 @@ pub fn simulate(params: &GrainParams, bit_depth: u8, subsampling_x: bool, subsam
   let mut luma = vec![0i32; SIZE * SIZE];
   let mut plane = vec![0i32; chroma_w * chroma_h];
 
-  for round in 0..ROUNDS {
-    let mut gaussian = Gaussian(0x9e37_79b9_7f4a_7c15 ^ (round + 1).wrapping_mul(0xd1b5_4a32_d192_ed03));
+  for values in gaussian_rounds() {
+    let mut gaussian = values.iter();
     if has_luma {
-      for value in luma.iter_mut() {
-        *value = round2(gaussian.next(), gauss_shift);
+      for (value, &raw) in luma.iter_mut().zip(gaussian.by_ref()) {
+        *value = round2(raw, gauss_shift);
       }
-      for y in 3..SIZE {
-        for x in 3..SIZE - 3 {
-          let mut sum = 0;
-          let mut pos = 0;
-          'taps: for dy in -lag..=0 {
-            for dx in -lag..=lag {
-              if dy == 0 && dx == 0 {
-                break 'taps;
-              }
-              let neighbour = luma[(y as i32 + dy) as usize * SIZE + (x as i32 + dx) as usize];
-              sum += params.ar_coeffs_y.get(pos).copied().unwrap_or(0) as i32 * neighbour;
-              pos += 1;
-            }
-          }
-          let index = y * SIZE + x;
-          luma[index] = (luma[index] + round2(sum, ar_shift)).clamp(grain_min, grain_max);
-        }
-      }
+      auto_regress(
+        &mut luma,
+        SIZE,
+        SIZE,
+        lag,
+        &params.ar_coeffs_y,
+        ar_shift,
+        (grain_min, grain_max),
+        |_, _| 0,
+      );
       let (variance, horizontal, vertical) = deviation(&luma, SIZE, SIZE);
       stats.luma_std += variance / ROUNDS as f64;
       stats.luma_rho[0] += horizontal / ROUNDS as f64;
@@ -110,38 +180,34 @@ pub fn simulate(params: &GrainParams, bit_depth: u8, subsampling_x: bool, subsam
       if !chroma[index] {
         continue;
       }
-      for value in plane.iter_mut() {
-        *value = round2(gaussian.next(), gauss_shift);
+      for (value, &raw) in plane.iter_mut().zip(gaussian.by_ref()) {
+        *value = round2(raw, gauss_shift);
       }
-      for y in 3..chroma_h {
-        for x in 3..chroma_w - 3 {
-          let mut sum = 0;
-          let mut pos = 0;
-          'taps: for dy in -lag..=0 {
-            for dx in -lag..=lag {
-              if dy == 0 && dx == 0 {
-                break 'taps;
-              }
-              let neighbour = plane[(y as i32 + dy) as usize * chroma_w + (x as i32 + dx) as usize];
-              sum += coeffs.get(pos).copied().unwrap_or(0) as i32 * neighbour;
-              pos += 1;
+      let luma_coeff = coeffs.get(luma_count).copied().unwrap_or(0) as i32;
+      let luma = &luma;
+      auto_regress(
+        &mut plane,
+        chroma_w,
+        chroma_h,
+        lag,
+        &coeffs[..luma_count.min(coeffs.len())],
+        ar_shift,
+        (grain_min, grain_max),
+        |x, y| {
+          if !has_luma {
+            return 0;
+          }
+          let luma_x = ((x - 3) << sx) + 3;
+          let luma_y = ((y - 3) << sy) + 3;
+          let mut total = 0;
+          for j in 0..=sy {
+            for i in 0..=sx {
+              total += luma[(luma_y + j) * SIZE + luma_x + i];
             }
           }
-          if has_luma {
-            let luma_x = ((x - 3) << sx) + 3;
-            let luma_y = ((y - 3) << sy) + 3;
-            let mut total = 0;
-            for j in 0..=sy {
-              for i in 0..=sx {
-                total += luma[(luma_y + j) * SIZE + luma_x + i];
-              }
-            }
-            sum += coeffs.get(luma_count).copied().unwrap_or(0) as i32 * round2(total, (sx + sy) as u32);
-          }
-          let index = y * chroma_w + x;
-          plane[index] = (plane[index] + round2(sum, ar_shift)).clamp(grain_min, grain_max);
-        }
-      }
+          luma_coeff * round2(total, (sx + sy) as u32)
+        },
+      );
       stats.chroma_std[index] += deviation(&plane, chroma_w, chroma_h).0 / ROUNDS as f64;
     }
   }

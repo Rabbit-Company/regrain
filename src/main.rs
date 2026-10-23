@@ -4,6 +4,7 @@ mod cancel;
 mod check;
 mod diff;
 mod generate;
+mod parallel;
 mod report;
 mod stats;
 mod stream;
@@ -13,6 +14,7 @@ mod template;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use report::{Coded, Json, Progress, error_code, event, fail};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -166,6 +168,9 @@ enum Command {
     /// Also show the grain at every brightness level
     #[arg(long)]
     curves: bool,
+    /// Worker threads, defaults to every available thread
+    #[arg(short = 'j', long)]
+    threads: Option<usize>,
   },
   /// Check a film grain table for anything AV1 forbids or that changes the grain
   Check {
@@ -177,6 +182,9 @@ enum Command {
     /// Overwrite the --fix output if it exists
     #[arg(short = 'y', long)]
     overwrite: bool,
+    /// Worker threads, defaults to every available thread
+    #[arg(short = 'j', long)]
+    threads: Option<usize>,
   },
   /// Print a shell completion script
   Completions {
@@ -279,6 +287,125 @@ impl Reporter {
     if self.mode == Progress::Json {
       fields.insert(0, ("command", Json::from(command)));
       event("summary", fields);
+    }
+  }
+}
+
+// The stats summary, written entry by entry, since a table with an entry for
+// every frame of a film and its curves would take gigabytes as one Json value.
+fn write_stats_summary(entries: &[stats::EntryStats], average: f64) -> Result<()> {
+  match stream_stats_summary(entries, average) {
+    Err(error) if error.kind() != std::io::ErrorKind::BrokenPipe => Err(error).code("io_error"),
+    _ => Ok(()),
+  }
+}
+
+fn stream_stats_summary(entries: &[stats::EntryStats], average: f64) -> std::io::Result<()> {
+  use std::io::Write;
+  let curve = |values: &[f64; 256]| Json::Array(values.iter().map(|&value| Json::from(value)).collect());
+  let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+  write!(
+    out,
+    "{{\"event\":\"summary\",\"command\":\"stats\",\"entries\":{},\"luma\":{},\"list\":[",
+    Json::from(entries.len()),
+    Json::from(average)
+  )?;
+  for (index, entry) in entries.iter().enumerate() {
+    let mut fields = vec![
+      ("start_seconds", Json::from(entry.start)),
+      ("end_seconds", Json::from(entry.end)),
+      ("seed", Json::from(entry.seed as u64)),
+      ("luma_dark", Json::from(entry.luma[0])),
+      ("luma_mid", Json::from(entry.luma[1])),
+      ("luma_bright", Json::from(entry.luma[2])),
+      ("luma", Json::from(entry.luma_mean)),
+      ("cb", Json::from(entry.chroma[0])),
+      ("cr", Json::from(entry.chroma[1])),
+      ("lag", Json::from(entry.lag as u64)),
+      ("correlation", Json::from(entry.correlation)),
+    ];
+    if let Some(curves) = &entry.curves {
+      fields.push((
+        "curves",
+        Json::Object(vec![
+          ("luma", curve(&curves.deviation[0])),
+          ("cb", curve(&curves.deviation[1])),
+          ("cr", curve(&curves.deviation[2])),
+          ("luma_peak", curve(&curves.peak[0])),
+          ("cb_peak", curve(&curves.peak[1])),
+          ("cr_peak", curve(&curves.peak[2])),
+        ]),
+      ));
+    }
+    write!(out, "{}{}", if index > 0 { "," } else { "" }, Json::Object(fields))?;
+  }
+  writeln!(out, "]}}")?;
+  out.flush()
+}
+
+fn default_threads(threads: Option<usize>) -> usize {
+  threads
+    .filter(|&count| count > 0)
+    .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |count| count.get()))
+}
+
+// Reports the start of a command that works through the entries of a table, and
+// returns the progress callback for crate::parallel::map. A table that is done
+// before the first progress report shows no progress at all.
+fn entry_progress(reporter: &Reporter, command: &str, total: usize, threads: usize, started: std::time::Instant) -> impl FnMut(usize) {
+  if reporter.mode == Progress::Json {
+    event(
+      "start",
+      vec![
+        ("command", Json::from(command)),
+        ("entries", Json::from(total)),
+        ("threads", Json::from(threads)),
+      ],
+    );
+  }
+  let mode = reporter.mode;
+  let terminal = std::io::stderr().is_terminal();
+  let mut shown = false;
+  move |done| {
+    if done < total || shown {
+      report_entries(mode, done, total, started.elapsed().as_secs_f64(), terminal);
+      shown = true;
+    }
+    if done == total && shown && terminal && mode == Progress::Text {
+      eprintln!();
+    }
+  }
+}
+
+// Progress in entries of the table.
+fn report_entries(mode: Progress, done: usize, total: usize, seconds: f64, terminal: bool) {
+  let rate = if seconds > 0.0 { done as f64 / seconds } else { 0.0 };
+  let remaining = (rate > 0.0).then(|| ((total - done) as f64 / rate).round() as u64);
+  match mode {
+    Progress::None => {}
+    Progress::Json => event(
+      "progress",
+      vec![
+        ("entries", Json::from(done)),
+        ("total", Json::from(total)),
+        ("percent", Json::from(done as f64 * 100.0 / total.max(1) as f64)),
+        ("entries_per_second", Json::from(rate)),
+        ("elapsed_seconds", Json::from(seconds)),
+        ("eta_seconds", Json::from(remaining)),
+      ],
+    ),
+    Progress::Text => {
+      let line = format!(
+        "{done}/{total} entries ({}%) {rate:.0} entries/s eta {}:{:02}",
+        done * 100 / total.max(1),
+        remaining.unwrap_or(0) / 60,
+        remaining.unwrap_or(0) % 60
+      );
+      if terminal {
+        eprint!("\r{line}   ");
+      } else {
+        eprintln!("{line}");
+      }
     }
   }
 }
@@ -454,9 +581,11 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         ],
       );
     }
-    Command::Stats { table, curves } => {
+    Command::Stats { table, curves, threads } => {
       let table = table::GrainTable::read(&table)?;
-      let entries = stats::table_stats(&table);
+      let threads = default_threads(threads);
+      let total = table.segments.len();
+      let entries = stats::table_stats(&table, curves, threads, entry_progress(reporter, "stats", total, threads, started))?;
       let covered: f64 = entries.iter().filter_map(|entry| entry.end.map(|end| end - entry.start)).sum();
       let weighted: f64 = entries
         .iter()
@@ -499,6 +628,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         );
         if curves {
           for (number, entry) in entries.iter().enumerate() {
+            let Some(curves) = &entry.curves else { continue };
             let end = entry.end.map_or_else(|| "end".to_string(), stats::clock);
             let _ = writeln!(
               text,
@@ -519,68 +649,37 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
               let _ = writeln!(
                 text,
                 "{level:>6} {:>6.3} {:>6.3} {:>6.3} {:>6.2} {:>6.2} {:>6.2}",
-                entry.deviation[0][level],
-                entry.deviation[1][level],
-                entry.deviation[2][level],
-                entry.peak[0][level],
-                entry.peak[1][level],
-                entry.peak[2][level]
+                curves.deviation[0][level],
+                curves.deviation[1][level],
+                curves.deviation[2][level],
+                curves.peak[0][level],
+                curves.peak[1][level],
+                curves.peak[2][level]
               );
             }
           }
         }
         print_bytes(text.as_bytes())?;
       }
-      let curve = |values: &[f64; 256]| Json::Array(values.iter().map(|&value| Json::from(value)).collect());
-      let list = entries
-        .iter()
-        .map(|entry| {
-          let mut fields = vec![
-            ("start_seconds", Json::from(entry.start)),
-            ("end_seconds", Json::from(entry.end)),
-            ("seed", Json::from(entry.seed as u64)),
-            ("luma_dark", Json::from(entry.luma[0])),
-            ("luma_mid", Json::from(entry.luma[1])),
-            ("luma_bright", Json::from(entry.luma[2])),
-            ("luma", Json::from(entry.luma_mean)),
-            ("cb", Json::from(entry.chroma[0])),
-            ("cr", Json::from(entry.chroma[1])),
-            ("lag", Json::from(entry.lag as u64)),
-            ("correlation", Json::from(entry.correlation)),
-          ];
-          if curves {
-            fields.push((
-              "curves",
-              Json::Object(vec![
-                ("luma", curve(&entry.deviation[0])),
-                ("cb", curve(&entry.deviation[1])),
-                ("cr", curve(&entry.deviation[2])),
-                ("luma_peak", curve(&entry.peak[0])),
-                ("cb_peak", curve(&entry.peak[1])),
-                ("cr_peak", curve(&entry.peak[2])),
-              ]),
-            ));
-          }
-          Json::Object(fields)
-        })
-        .collect();
-      reporter.summary(
-        "stats",
-        vec![
-          ("entries", Json::from(entries.len())),
-          ("luma", Json::from(average)),
-          ("list", Json::Array(list)),
-        ],
-      );
+      if reporter.mode == Progress::Json {
+        write_stats_summary(&entries, average)?;
+      }
     }
-    Command::Check { table, fix, overwrite } => {
+    Command::Check {
+      table,
+      fix,
+      overwrite,
+      threads,
+    } => {
       let text = std::fs::read_to_string(&table)
         .with_context(|| format!("failed to read {}", table.display()))
         .code("table_not_found")?;
       let document = table::parse_document(&text)
         .with_context(|| format!("invalid film grain table {}", table.display()))
         .code("invalid_table")?;
-      let report = check::check(&document);
+      let threads = default_threads(threads);
+      let total = document.entries.len();
+      let report = check::check(&document, threads, entry_progress(reporter, "check", total, threads, started))?;
       for finding in &report.findings {
         if reporter.mode == Progress::Json {
           event(
@@ -692,7 +791,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       let entry = table
         .segments
         .first()
-        .map(|segment| stats::entry_stats(segment.start, segment.end, segment.seed, &segment.params));
+        .map(|segment| stats::entry_stats(segment.start, segment.end, segment.seed, &segment.params, false));
       match &entry {
         Some(entry) => reporter.text(format!(
           "Luma grain {:.3} {:.3} {:.3} at brightness 32, 128 and 224, cb {:.3}, cr {:.3}, corr {:.2}, wrote {}",

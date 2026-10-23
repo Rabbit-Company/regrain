@@ -55,8 +55,8 @@ A build that is too new for the CPU crashes with an illegal instruction error an
 On Linux and macOS:
 
 ```sh
-tar -xzf regrain-v0.3.0-linux-x86_64-v3.tar.gz
-sudo install regrain-v0.3.0-linux-x86_64-v3/regrain /usr/local/bin/
+tar -xzf regrain-v0.3.1-linux-x86_64-v3.tar.gz
+sudo install regrain-v0.3.1-linux-x86_64-v3/regrain /usr/local/bin/
 ```
 
 The macOS binaries are not signed. If macOS refuses to open it, clear the quarantine flag once:
@@ -256,6 +256,8 @@ Prints every entry with its start and end time and the grain an AV1 decoder will
     0:03.879     0:07.508  1.133  1.820  1.856  1.718  1.298  0.603    3   0.39
 ```
 
+Entries are described on every available thread, or as many as `-j, --threads <N>` gives. A table with an entry for every frame of a two hour film, about 172,000 entries as SVT-AV1 writes them, takes about 16 seconds with 16 threads on the computer described under [Speed](#speed).
+
 `--curves` also shows the grain at each brightness level from 0 to 255, for luma, Cb and Cr. Text output lists every 16th level, and JSON output lists all 256. For each level there are two values:
 
 - The deviation, the same measure as the columns above.
@@ -297,6 +299,8 @@ warning: entry 5 on line 34 at 0:12.000: no entry covers 0:11.000 to 0:12.000, s
 
 A filter counts as unstable when its grain, grown over a template of the decoder's size, is more than 1.2 times as strong in the bottom rows a decoder reads as in the top ones. Strong grain from a stable filter stays below 1.04: the most on 1133 entries measured by `diff` from an anime episode and on Netflix's 1868 entries for Dune: Part Two. Coefficients that add up to exactly the divisor give 1.2 to 1.4, and anything above that grows fast.
 
+The filters are simulated on every available thread, or as many as `-j, --threads <N>` gives. A table of 172,000 entries takes about 7 seconds.
+
 `--fix` writes a corrected table when every error can be corrected, and nothing otherwise. The corrected table also leaves out what the bitstream cannot carry, such as coefficients for planes without grain, the same way `apply` stores it. A table exported from a video after `apply` is then identical to it.
 
 A table does not say which chroma format it is for, so `check` assumes 4:2:0, the format of nearly every AV1 encode.
@@ -309,13 +313,13 @@ Every command accepts `--progress <text|json|none>`. `-q` is the same as `--prog
 
 With `--progress json`, regrain writes one JSON object per line to standard output and nothing else there. Messages from ffmpeg still go to standard error. Every object has an `event` field:
 
-| Event      | Sent by       | When                          |
-| ---------- | ------------- | ----------------------------- |
-| `start`    | `diff`        | After both videos were probed |
-| `progress` | `diff`        | About twice a second          |
-| `finding`  | `check`       | For every problem found       |
-| `summary`  | every command | When the command succeeded    |
-| `error`    | every command | When the command failed       |
+| Event      | Sent by                  | When                                                                |
+| ---------- | ------------------------ | ------------------------------------------------------------------- |
+| `start`    | `diff`, `stats`, `check` | After both videos were probed, or the table was read                |
+| `progress` | `diff`, `stats`, `check` | About twice a second for `diff`, four times for `stats` and `check` |
+| `finding`  | `check`                  | For every problem found                                             |
+| `summary`  | every command            | When the command succeeded                                          |
+| `error`    | every command            | When the command failed                                             |
 
 ```json
 {"event":"start","command":"diff","frames":720,"width":1440,"height":1080,"bit_depth":8,"fps":23.976,"scan":"quarter","threads":16}
@@ -325,6 +329,13 @@ With `--progress json`, regrain writes one JSON object per line to standard outp
 ```
 
 In `start` and `progress`, `frames` and `total` count the frames the chosen scan will measure. Values that are not known are `null`.
+
+`stats` and `check` count entries of the table instead. Their `start` has `entries` and `threads`, and their `progress` has `entries`, `total`, `percent`, `entries_per_second`, `elapsed_seconds` and `eta_seconds`. A table that is done before the first report gets no `progress` event:
+
+```json
+{"event":"start","command":"stats","entries":172000,"threads":16}
+{"event":"progress","entries":5120,"total":172000,"percent":2.977,"entries_per_second":5028.583,"elapsed_seconds":1.018,"eta_seconds":33}
+```
 
 A `finding` has `severity` (`error` or `warning`), `code`, `entry`, `line`, `start_seconds`, `message` and `fixable`. `entry` and `start_seconds` are `null` for a problem with the table as a whole:
 

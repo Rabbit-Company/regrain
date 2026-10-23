@@ -1,3 +1,4 @@
+use crate::diff::synth::auto_regress;
 use rabbit_av1::grain::GrainParams;
 
 const LUMA_W: usize = 82;
@@ -47,24 +48,16 @@ pub fn templates(params: &GrainParams, seed: u16, bit_depth: u8, subsampling_x: 
     for value in luma.iter_mut() {
       *value = round2(GAUSSIAN_SEQUENCE[random.bits(11)] as i32, gauss_shift);
     }
-    for y in 3..LUMA_H {
-      for x in 3..LUMA_W - 3 {
-        let mut sum = 0;
-        let mut pos = 0;
-        'taps: for dy in -lag..=0 {
-          for dx in -lag..=lag {
-            if dy == 0 && dx == 0 {
-              break 'taps;
-            }
-            let neighbour = luma[(y as i32 + dy) as usize * LUMA_W + (x as i32 + dx) as usize];
-            sum += params.ar_coeffs_y.get(pos).copied().unwrap_or(0) as i32 * neighbour;
-            pos += 1;
-          }
-        }
-        let index = y * LUMA_W + x;
-        luma[index] = (luma[index] + round2(sum, ar_shift)).clamp(grain_min, grain_max);
-      }
-    }
+    auto_regress(
+      &mut luma,
+      LUMA_W,
+      LUMA_H,
+      lag,
+      &params.ar_coeffs_y,
+      ar_shift,
+      (grain_min, grain_max),
+      |_, _| 0,
+    );
   }
 
   let mut chroma = [vec![0i32; chroma_w * chroma_h], vec![0i32; chroma_w * chroma_h]];
@@ -82,36 +75,31 @@ pub fn templates(params: &GrainParams, seed: u16, bit_depth: u8, subsampling_x: 
     if !active[index] {
       continue;
     }
-    let plane = &mut chroma[index];
-    for y in 3..chroma_h {
-      for x in 3..chroma_w - 3 {
-        let mut sum = 0;
-        let mut pos = 0;
-        'taps: for dy in -lag..=0 {
-          for dx in -lag..=lag {
-            if dy == 0 && dx == 0 {
-              break 'taps;
-            }
-            let neighbour = plane[(y as i32 + dy) as usize * chroma_w + (x as i32 + dx) as usize];
-            sum += coeffs.get(pos).copied().unwrap_or(0) as i32 * neighbour;
-            pos += 1;
+    let luma_coeff = coeffs.get(luma_count).copied().unwrap_or(0) as i32;
+    let luma = &luma;
+    auto_regress(
+      &mut chroma[index],
+      chroma_w,
+      chroma_h,
+      lag,
+      &coeffs[..luma_count.min(coeffs.len())],
+      ar_shift,
+      (grain_min, grain_max),
+      |x, y| {
+        if !has_luma {
+          return 0;
+        }
+        let luma_x = ((x - 3) << sx) + 3;
+        let luma_y = ((y - 3) << sy) + 3;
+        let mut total = 0;
+        for j in 0..=sy {
+          for i in 0..=sx {
+            total += luma[(luma_y + j) * LUMA_W + luma_x + i];
           }
         }
-        if has_luma {
-          let luma_x = ((x - 3) << sx) + 3;
-          let luma_y = ((y - 3) << sy) + 3;
-          let mut total = 0;
-          for j in 0..=sy {
-            for i in 0..=sx {
-              total += luma[(luma_y + j) * LUMA_W + luma_x + i];
-            }
-          }
-          sum += coeffs.get(luma_count).copied().unwrap_or(0) as i32 * round2(total, (sx + sy) as u32);
-        }
-        let at = y * chroma_w + x;
-        plane[at] = (plane[at] + round2(sum, ar_shift)).clamp(grain_min, grain_max);
-      }
-    }
+        luma_coeff * round2(total, (sx + sy) as u32)
+      },
+    );
   }
   Templates { luma, chroma, chroma_w }
 }

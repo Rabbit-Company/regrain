@@ -87,6 +87,12 @@ pub struct EntryStats {
   pub chroma: [f64; 2],
   pub lag: u8,
   pub correlation: f64,
+  // Only built when asked for, since a table with an entry for every frame of a
+  // film would need gigabytes for them.
+  pub curves: Option<Box<Curves>>,
+}
+
+pub struct Curves {
   // Grain deviation at each brightness level for luma, Cb and Cr.
   pub deviation: [[f64; 256]; 3],
   // Largest grain the decoder adds at each brightness level for luma, Cb and Cr,
@@ -95,29 +101,20 @@ pub struct EntryStats {
 }
 
 // Grain deviation the decoder produces, on the 0 to 255 scale.
-pub fn entry_stats(start: u64, end: u64, seed: u16, params: &GrainParams) -> EntryStats {
+pub fn entry_stats(start: u64, end: u64, seed: u16, params: &GrainParams, curves: bool) -> EntryStats {
   let chroma_active = [
     params.chroma_scaling_from_luma || !params.scaling_points_cb.is_empty(),
     params.chroma_scaling_from_luma || !params.scaling_points_cr.is_empty(),
   ];
   let template = simulate(params, DEPTH, true, true, chroma_active);
-  let extremes = extremes(params, seed, DEPTH, true, true);
   let step = (1u32 << (DEPTH - 8)) as f64;
   let unit = (1u32 << params.scaling_shift) as f64 * step;
   let scaling = scaling_per_level(params, chroma_active);
   let spread = [template.luma_std, template.chroma_std[0], template.chroma_std[1]];
-  let round2 = |value: i32| {
-    let shift = params.scaling_shift as u32;
-    (value + (1 << (shift - 1))) >> shift
-  };
   let mut deviation = [[0.0; 256]; 3];
-  let mut peak = [[0.0; 256]; 3];
   for plane in 0..3 {
     for level in 0..256 {
-      let scale = scaling[plane][level];
-      deviation[plane][level] = scale as f64 * spread[plane] / unit;
-      let [low, high] = extremes[plane];
-      peak[plane][level] = round2(scale * low).abs().max(round2(scale * high).abs()) as f64 / step;
+      deviation[plane][level] = scaling[plane][level] as f64 * spread[plane] / unit;
     }
   }
   let chroma = |index: usize, points: &[[u8; 2]]| -> f64 {
@@ -131,6 +128,22 @@ pub fn entry_stats(start: u64, end: u64, seed: u16, params: &GrainParams) -> Ent
     };
     lut.iter().sum::<i32>() as f64 / 256.0 * template.chroma_std[index] / unit
   };
+  let curves = curves.then(|| {
+    let extremes = extremes(params, seed, DEPTH, true, true);
+    let round2 = |value: i32| {
+      let shift = params.scaling_shift as u32;
+      (value + (1 << (shift - 1))) >> shift
+    };
+    let mut peak = [[0.0; 256]; 3];
+    for plane in 0..3 {
+      let [low, high] = extremes[plane];
+      for level in 0..256 {
+        let scale = scaling[plane][level];
+        peak[plane][level] = round2(scale * low).abs().max(round2(scale * high).abs()) as f64 / step;
+      }
+    }
+    Box::new(Curves { deviation, peak })
+  });
   EntryStats {
     start: start as f64 / TICKS_PER_SECOND as f64,
     end: (end < OPEN_END).then(|| end as f64 / TICKS_PER_SECOND as f64),
@@ -140,17 +153,19 @@ pub fn entry_stats(start: u64, end: u64, seed: u16, params: &GrainParams) -> Ent
     chroma: [chroma(0, &params.scaling_points_cb), chroma(1, &params.scaling_points_cr)],
     lag: params.ar_coeff_lag,
     correlation: (template.luma_rho[0] + template.luma_rho[1]) / 2.0,
-    deviation,
-    peak,
+    curves,
   }
 }
 
-pub fn table_stats(table: &GrainTable) -> Vec<EntryStats> {
-  table
-    .segments
-    .iter()
-    .map(|segment| entry_stats(segment.start, segment.end, segment.seed, &segment.params))
-    .collect()
+// Describes every entry of a table on `threads` threads. `progress` is called
+// with the number of entries done, as crate::parallel::map does.
+pub fn table_stats(table: &GrainTable, curves: bool, threads: usize, progress: impl FnMut(usize)) -> anyhow::Result<Vec<EntryStats>> {
+  crate::parallel::map(
+    &table.segments,
+    threads,
+    |segment| entry_stats(segment.start, segment.end, segment.seed, &segment.params, curves),
+    progress,
+  )
 }
 
 pub fn clock(seconds: f64) -> String {
@@ -215,16 +230,18 @@ mod tests {
       scaling_shift: 11,
       ..GrainParams::default()
     };
-    let stats = entry_stats(0, 20_000_000, 7391, &params);
+    let stats = entry_stats(0, 20_000_000, 7391, &params, true);
+    let curves = stats.curves.as_ref().unwrap();
     // A white template in 10 bit has a deviation of 128, so 32 / 2048 * 128 / 4 is 0.5.
     assert!((stats.luma[1] - 0.5).abs() < 0.02, "{}", stats.luma[1]);
-    assert_eq!(stats.deviation[0][128], stats.luma[1]);
+    assert_eq!(curves.deviation[0][128], stats.luma[1]);
     assert_eq!(stats.end, Some(2.0));
     assert_eq!(stats.chroma, [0.0, 0.0]);
-    assert_eq!(stats.deviation[1], [0.0; 256]);
-    assert_eq!(stats.peak[2], [0.0; 256]);
+    assert_eq!(curves.deviation[1], [0.0; 256]);
+    assert_eq!(curves.peak[2], [0.0; 256]);
+    assert!(entry_stats(0, 20_000_000, 7391, &params, false).curves.is_none());
     // A Gaussian peak in a few thousand samples lies near 3.5 deviations.
-    let ratio = stats.peak[0][128] / stats.deviation[0][128];
+    let ratio = curves.peak[0][128] / curves.deviation[0][128];
     assert!((3.0..4.5).contains(&ratio), "{ratio}");
     assert_eq!(clock(3725.5), "1:02:05.500");
     assert_eq!(clock(65.25), "1:05.250");
