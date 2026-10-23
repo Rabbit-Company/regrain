@@ -14,7 +14,33 @@ const TIMESTAMP_TOLERANCE: u64 = 10_000;
 
 type FrameGrain = Option<(GrainParams, u16)>;
 
+// What a command that goes through a stream is doing, for progress reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+  // Reading the input to find its frames and their grain.
+  Read,
+  // Writing the output with the new grain.
+  Write,
+  // Reading the output back and decoding it with dav1d.
+  Verify,
+}
+
+impl Stage {
+  pub fn name(self) -> &'static str {
+    match self {
+      Stage::Read => "read",
+      Stage::Write => "write",
+      Stage::Verify => "verify",
+    }
+  }
+}
+
+// Called with the stage, the frames done in it and its total when known.
+pub type Progress<'a> = &'a dyn Fn(Stage, u64, Option<u64>);
+
 struct Scan {
+  // Temporal units, which are the frames a container or IVF stores.
+  packets: u64,
   display: Vec<Option<u64>>,
   // Display time, the time the decoded frame was first shown, and its grain.
   shown: Vec<(u64, u64, FrameGrain)>,
@@ -22,9 +48,9 @@ struct Scan {
   format: Option<ChromaFormat>,
 }
 
-fn scan(path: &Path, ffmpeg: &str, fps: Option<(u32, u32)>) -> Result<Scan> {
+fn scan(path: &Path, ffmpeg: &str, fps: Option<(u32, u32)>, progress: &dyn Fn(u64)) -> Result<Scan> {
   let mut input = Input::open(path, ffmpeg, fps)?;
-  let mut result = match scan_reader(&mut input.reader) {
+  let mut result = match scan_reader(&mut input.reader, progress) {
     Ok(result) => result,
     Err(error) if crate::cancel::requested() => return Err(error),
     Err(error) => return Err(explain(&mut input, error)),
@@ -37,9 +63,10 @@ fn scan(path: &Path, ffmpeg: &str, fps: Option<(u32, u32)>) -> Result<Scan> {
   Ok(result)
 }
 
-fn scan_reader(reader: &mut VideoReader) -> Result<Scan> {
+fn scan_reader(reader: &mut VideoReader, progress: &dyn Fn(u64)) -> Result<Scan> {
   let mut parser = StreamParser::new();
   let mut result = Scan {
+    packets: 0,
     display: Vec::new(),
     shown: Vec::new(),
     had_grain: false,
@@ -51,6 +78,8 @@ fn scan_reader(reader: &mut VideoReader) -> Result<Scan> {
   while let Some(packet) = reader.next_packet()? {
     crate::cancel::check()?;
     packets += 1;
+    result.packets = packets;
+    progress(packets);
     let ticks = reader.timestamp(packet.pts, TICKS_PER_SECOND);
     let obus = parser
       .parse_packet(&packet.data)
@@ -100,8 +129,8 @@ fn scan_reader(reader: &mut VideoReader) -> Result<Scan> {
   Ok(result)
 }
 
-pub fn export(path: &Path, ffmpeg: &str, fps: Option<(u32, u32)>) -> Result<(GrainTable, usize)> {
-  let mut scan = scan(path, ffmpeg, fps)?;
+pub fn export(path: &Path, ffmpeg: &str, fps: Option<(u32, u32)>, progress: Progress) -> Result<(GrainTable, usize)> {
+  let mut scan = scan(path, ffmpeg, fps, &|done| progress(Stage::Read, done, None))?;
   let shown = scan.shown.len();
   scan.shown.sort_by_key(|(ticks, _, _)| *ticks);
   let mut table = GrainTable::default();
@@ -139,6 +168,7 @@ pub struct ApplyOptions<'a> {
   pub compact: bool,
   pub static_grain: bool,
   pub verify: bool,
+  pub progress: Progress<'a>,
 }
 
 pub struct ApplyReport {
@@ -164,8 +194,8 @@ fn explain(input: &mut Input, error: anyhow::Error) -> anyhow::Error {
 }
 
 // Decoder messages without the addresses ffmpeg puts in front of them.
-fn decode_messages(path: &Path, ffmpeg: &str) -> Result<(bool, Vec<String>)> {
-  rabbit_av1::container::decode_messages(path, ffmpeg).map_err(|error| {
+fn decode_messages(path: &Path, ffmpeg: &str, progress: &dyn Fn(u64)) -> Result<(bool, Vec<String>)> {
+  rabbit_av1::container::decode_messages_with_progress(path, ffmpeg, progress).map_err(|error| {
     if error.kind() == ErrorKind::DecoderMissing {
       fail(
         "verify_unavailable",
@@ -179,8 +209,17 @@ fn decode_messages(path: &Path, ffmpeg: &str) -> Result<(bool, Vec<String>)> {
 
 // Reads the written stream back and checks that every shown frame carries the
 // grain it should, then lets a real decoder go through all of it.
-fn verify(path: &Path, input: &Path, table: Option<&GrainTable>, ffmpeg: &str, fps: (u32, u32), frames_shown: usize) -> Result<()> {
-  let written = scan(path, ffmpeg, Some(fps)).code("verify_failed")?;
+fn verify(
+  path: &Path,
+  input: &Path,
+  table: Option<&GrainTable>,
+  ffmpeg: &str,
+  fps: (u32, u32),
+  frames_shown: usize,
+  progress: Progress,
+) -> Result<()> {
+  progress(Stage::Verify, 0, Some(frames_shown as u64));
+  let written = scan(path, ffmpeg, Some(fps), &|_| {}).code("verify_failed")?;
   let format = written.format.context("the output has no sequence header").code("verify_failed")?;
   if written.shown.len() != frames_shown {
     return Err(fail(
@@ -211,13 +250,13 @@ fn verify(path: &Path, input: &Path, table: Option<&GrainTable>, ffmpeg: &str, f
       ));
     }
   }
-  let (decoded, messages) = decode_messages(path, ffmpeg)?;
+  let (decoded, messages) = decode_messages(path, ffmpeg, &|frames| progress(Stage::Verify, frames, Some(frames_shown as u64)))?;
   if decoded && messages.is_empty() {
     return Ok(());
   }
   // Damaged or unusual input can make the decoder complain about the original too.
   // Only complaints that the original does not cause count.
-  let (input_decoded, known) = decode_messages(input, ffmpeg)?;
+  let (input_decoded, known) = decode_messages(input, ffmpeg, &|_| {})?;
   let new: Vec<&String> = messages.iter().filter(|message| !known.contains(message)).collect();
   if (!decoded && input_decoded) || !new.is_empty() {
     let first = new.first().map(|message| message.as_str()).unwrap_or("the decoder failed");
@@ -381,7 +420,8 @@ impl<'a> Rewriter<'a> {
 pub fn apply(input_path: &Path, output_path: &Path, table: Option<&GrainTable>, options: &ApplyOptions) -> Result<ApplyReport> {
   let empty_table = table.is_some_and(|table| table.segments.is_empty());
   let table = table.filter(|table| !table.segments.is_empty());
-  let scan = scan(input_path, options.ffmpeg, options.fps)?;
+  let progress = options.progress;
+  let scan = scan(input_path, options.ffmpeg, options.fps, &|done| progress(Stage::Read, done, None))?;
   let frames_shown = scan.shown.len();
   let frames = scan.display.len();
   let mut rewriter = Rewriter::new(table, scan.display.clone(), options.compact, options.static_grain);
@@ -390,8 +430,11 @@ pub fn apply(input_path: &Path, output_path: &Path, table: Option<&GrainTable>, 
   let mut output = Output::create(output_path, input_path, &input.reader, options.ffmpeg)?;
   let mut parser = StreamParser::new();
   let result = (|| -> Result<()> {
+    let mut written = 0;
     while let Some(packet) = input.reader.next_packet()? {
       crate::cancel::check()?;
+      written += 1;
+      progress(Stage::Write, written, Some(scan.packets.max(written)));
       let data = rewriter.packet(&mut parser, &packet.data).code("invalid_bitstream")?;
       output.write_packet(packet.pts, &data, packet.units.as_deref())?;
     }
@@ -416,7 +459,7 @@ pub fn apply(input_path: &Path, output_path: &Path, table: Option<&GrainTable>, 
     return Err(error);
   }
   if options.verify
-    && let Err(error) = verify(&written.temp, input_path, table, options.ffmpeg, fps, frames_shown)
+    && let Err(error) = verify(&written.temp, input_path, table, options.ffmpeg, fps, frames_shown, progress)
   {
     written.discard();
     return Err(error);
@@ -448,7 +491,7 @@ mod tests {
     let Ok(mut reader) = VideoReader::open(Box::new(Cursor::new(data.to_vec())), None) else {
       return;
     };
-    let Ok(scan) = scan_reader(&mut reader) else { return };
+    let Ok(scan) = scan_reader(&mut reader, &|_| {}) else { return };
     let Ok(mut reader) = VideoReader::open(Box::new(Cursor::new(data.to_vec())), None) else {
       return;
     };

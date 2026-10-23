@@ -89,6 +89,9 @@ enum Command {
     /// Area of the source that the denoised video covers, as WIDTH:HEIGHT:X:Y
     #[arg(long)]
     crop: Option<String>,
+    /// Scale the source to this size after --crop, as WIDTHxHEIGHT, for a denoised video that was downscaled
+    #[arg(long, value_parser = parse_resolution)]
+    scale: Option<(u32, u32)>,
     /// Start measuring this many seconds into both videos
     #[arg(long, default_value_t = 0.0)]
     start: f64,
@@ -343,6 +346,121 @@ fn stream_stats_summary(entries: &[stats::EntryStats], average: f64) -> std::io:
   out.flush()
 }
 
+// Progress of apply, remove and export, which go through the stream in stages.
+// Each stage takes a share of the whole, so `percent` counts for the command:
+// decoding with dav1d to verify takes far longer than reading and writing.
+struct StreamProgress {
+  mode: Progress,
+  terminal: bool,
+  shares: &'static [(stream::Stage, f64)],
+  started: std::time::Instant,
+  stage: std::cell::Cell<Option<(stream::Stage, std::time::Instant)>>,
+  reported: std::cell::Cell<Option<std::time::Instant>>,
+  shown: std::cell::Cell<bool>,
+}
+
+impl StreamProgress {
+  fn new(reporter: &Reporter, command: &str, shares: &'static [(stream::Stage, f64)]) -> StreamProgress {
+    if reporter.mode == Progress::Json {
+      event("start", vec![("command", Json::from(command))]);
+    }
+    StreamProgress {
+      mode: reporter.mode,
+      terminal: std::io::stderr().is_terminal(),
+      shares,
+      started: std::time::Instant::now(),
+      stage: std::cell::Cell::new(None),
+      reported: std::cell::Cell::new(None),
+      shown: std::cell::Cell::new(false),
+    }
+  }
+
+  fn report(&self, stage: stream::Stage, done: u64, total: Option<u64>) {
+    let now = std::time::Instant::now();
+    let (stage_started, begins) = match self.stage.get() {
+      Some((current, started)) if current == stage => (started, false),
+      _ => {
+        self.stage.set(Some((stage, now)));
+        (now, true)
+      }
+    };
+    // About twice a second. JSON also gets the start of every stage, so a program sees it
+    // begin, which on a terminal would only print lines without a speed yet.
+    let due = now - self.reported.get().unwrap_or(self.started) >= std::time::Duration::from_millis(500);
+    if !(due || (begins && self.mode == Progress::Json)) || self.mode == Progress::None {
+      return;
+    }
+    self.reported.set(Some(now));
+    let seconds = (now - stage_started).as_secs_f64();
+    let rate = if seconds > 0.0 { done as f64 / seconds } else { 0.0 };
+    let remaining = total
+      .filter(|_| rate > 0.0)
+      .map(|total| (total.saturating_sub(done) as f64 / rate).round() as u64);
+    let share = |wanted: stream::Stage| {
+      let before: f64 = self
+        .shares
+        .iter()
+        .take_while(|(stage, _)| *stage != wanted)
+        .map(|(_, share)| share)
+        .sum();
+      let own = self.shares.iter().find(|(stage, _)| *stage == wanted).map(|(_, share)| *share);
+      own.map(|own| (before, own))
+    };
+    let percent = share(stage).map(|(before, own)| {
+      let part = total
+        .filter(|&total| total > 0)
+        .map_or(0.0, |total| done.min(total) as f64 / total as f64);
+      before + own * part
+    });
+    match self.mode {
+      Progress::None => {}
+      Progress::Json => event(
+        "progress",
+        vec![
+          ("stage", Json::from(stage.name())),
+          ("frames", Json::from(done)),
+          ("total", Json::from(total)),
+          ("percent", Json::from(percent)),
+          ("fps", Json::from(rate)),
+          ("elapsed_seconds", Json::from(self.started.elapsed().as_secs_f64())),
+          ("eta_seconds", Json::from(remaining)),
+        ],
+      ),
+      Progress::Text => {
+        let frames = match total {
+          Some(total) => format!("{done}/{total} frames"),
+          None => format!("{done} frames"),
+        };
+        let line = format!(
+          "{}: {frames}{} {rate:.0} fps",
+          stage.name(),
+          percent.map_or_else(String::new, |percent| format!(" ({percent:.0}%)"))
+        );
+        if self.terminal {
+          eprint!("\r{line}   ");
+        } else {
+          eprintln!("{line}");
+        }
+        self.shown.set(true);
+      }
+    }
+  }
+
+  // Ends the progress line before the result is printed.
+  fn finish(&self) {
+    if self.shown.get() && self.terminal {
+      eprintln!();
+    }
+  }
+}
+
+const WRITE_SHARES: [(stream::Stage, f64); 2] = [(stream::Stage::Read, 50.0), (stream::Stage::Write, 50.0)];
+const VERIFY_SHARES: [(stream::Stage, f64); 3] = [
+  (stream::Stage::Read, 10.0),
+  (stream::Stage::Write, 10.0),
+  (stream::Stage::Verify, 80.0),
+];
+
 fn default_threads(threads: Option<usize>) -> usize {
   threads
     .filter(|&count| count > 0)
@@ -426,14 +544,18 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
     } => {
       check_output(&input, &output, overwrite)?;
       let table = table::GrainTable::read(&table)?;
+      let progress = StreamProgress::new(reporter, "apply", if verify { &VERIFY_SHARES } else { &WRITE_SHARES });
       let options = stream::ApplyOptions {
         ffmpeg: &ffmpeg,
         fps,
         compact: !full_headers,
         static_grain,
         verify,
+        progress: &|stage, done, total| progress.report(stage, done, total),
       };
-      let report = stream::apply(&input, &output, Some(&table), &options)?;
+      let report = stream::apply(&input, &output, Some(&table), &options);
+      progress.finish();
+      let report = report?;
       if report.replaced {
         reporter.text("Replaced the film grain that was already in the video");
       }
@@ -474,6 +596,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       threads,
       no_chroma,
       crop,
+      scale,
       start,
       duration,
       scene_threshold,
@@ -505,6 +628,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         threads,
         chroma: !no_chroma,
         crop,
+        scale: scale.map(|(width, height)| (width as usize, height as usize)),
         start: start.max(0.0),
         duration: duration.filter(|&seconds| seconds > 0.0),
         scene_threshold,
@@ -828,7 +952,10 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       fps,
     } => {
       check_output(&input, &output, overwrite)?;
-      let (table, frames) = stream::export(&input, &ffmpeg, fps)?;
+      let progress = StreamProgress::new(reporter, "export", &[]);
+      let exported = stream::export(&input, &ffmpeg, fps, &|stage, done, total| progress.report(stage, done, total));
+      progress.finish();
+      let (table, frames) = exported?;
       table.write(&output)?;
       reporter.text(format!("Wrote {} segments to {}", table.segments.len(), output.display()));
       reporter.summary(
@@ -850,14 +977,18 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       fps,
     } => {
       check_output(&input, &output, overwrite)?;
+      let progress = StreamProgress::new(reporter, "remove", if verify { &VERIFY_SHARES } else { &WRITE_SHARES });
       let options = stream::ApplyOptions {
         ffmpeg: &ffmpeg,
         fps,
         compact: false,
         static_grain: false,
         verify,
+        progress: &|stage, done, total| progress.report(stage, done, total),
       };
-      let report = stream::apply(&input, &output, None, &options)?;
+      let report = stream::apply(&input, &output, None, &options);
+      progress.finish();
+      let report = report?;
       reporter.text(format!(
         "Removed film grain from {} frames, wrote {}",
         report.frames,

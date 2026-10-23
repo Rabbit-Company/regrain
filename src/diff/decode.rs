@@ -11,6 +11,7 @@ pub struct StreamSpec {
   pub ffmpeg: String,
   pub format: PixelFormat,
   pub crop: Option<String>,
+  pub scale: Option<(usize, usize)>,
   pub intra_only: bool,
   pub fps: f64,
   pub start_seconds: f64,
@@ -97,6 +98,10 @@ impl ChunkDecoder {
     }
     if let Some(select) = select {
       filters.push(select);
+    }
+    // After the frames a sampled scan skips are dropped, so only measured frames are scaled.
+    if let Some((width, height)) = spec.scale {
+      filters.push(format!("scale={width}:{height}:flags=lanczos"));
     }
     filters.push(format!("format={}", spec.format.name()));
 

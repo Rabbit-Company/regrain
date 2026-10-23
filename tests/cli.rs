@@ -80,7 +80,10 @@ fn apply_export_and_remove_round_trip() {
   assert!(compact < full);
 
   let summary = regrain(&["apply", &clean, "-o", &path(&dir, "json.ivf"), "-t", &table, "--progress", "json"]);
-  let summary = String::from_utf8(summary.stdout).unwrap();
+  let stdout = String::from_utf8(summary.stdout).unwrap();
+  assert!(stdout.starts_with("{\"event\":\"start\",\"command\":\"apply\"}\n"), "{stdout}");
+  assert!(stdout.contains("{\"event\":\"progress\",\"stage\":\"write\","), "{stdout}");
+  let summary = stdout.lines().last().unwrap();
   assert!(summary.starts_with("{\"event\":\"summary\",\"command\":\"apply\""), "{summary}");
   assert!(
     summary.contains("\"frames\":24,") && summary.contains("\"entries\":2,"),
@@ -258,6 +261,63 @@ fn generate_writes_the_requested_grain() {
   );
   let too_strong = regrain(&["generate", "-o", &table, "-y", "--strength", "80", "--progress", "json"]);
   assert!(String::from_utf8_lossy(&too_strong.stdout).contains("\"code\":\"invalid_argument\""));
+  let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn diff_scales_the_source_to_a_downscaled_video() {
+  let dir = workspace("scale");
+  let noisy = path(&dir, "noisy.mkv");
+  let scaled = path(&dir, "scaled.mkv");
+  let clean = path(&dir, "clean.mkv");
+  let lossless = ["-pix_fmt", "yuv420p10le", "-c:v", "ffv1"];
+  // A letterboxed source, cut to the picture and downscaled as an encoding pipeline does.
+  let mut noisy_args = vec!["-f", "lavfi", "-i", "color=c=0x707070:size=512x320:rate=24", "-frames:v", "30"];
+  noisy_args.extend_from_slice(&["-vf", "format=yuv420p10le,noise=c0s=10:c0f=t"]);
+  noisy_args.extend_from_slice(&lossless);
+  noisy_args.push(&noisy);
+  let mut scaled_args = vec!["-i", &noisy, "-vf", "crop=512:256:0:32,scale=256:128:flags=lanczos"];
+  scaled_args.extend_from_slice(&lossless);
+  scaled_args.push(&scaled);
+  let mut clean_args = vec!["-f", "lavfi", "-i", "color=c=0x707070:size=256x128:rate=24", "-frames:v", "30"];
+  clean_args.extend_from_slice(&lossless);
+  clean_args.push(&clean);
+  if !ffmpeg(&noisy_args) || !ffmpeg(&scaled_args) || !ffmpeg(&clean_args) {
+    eprintln!("skipped: ffmpeg is not available");
+    return;
+  }
+  let luma = |table: &str| {
+    let text = std::fs::read_to_string(table).unwrap();
+    text.lines().find(|line| line.trim_start().starts_with("sY")).unwrap().to_string()
+  };
+  let unscaled = path(&dir, "unscaled.tbl");
+  let refused = regrain(&["diff", &noisy, &clean, "-o", &unscaled, "-q"]);
+  assert!(String::from_utf8_lossy(&refused.stderr).contains("--scale"));
+  let measured = path(&dir, "measured.tbl");
+  let result = regrain(&[
+    "diff",
+    &noisy,
+    &clean,
+    "-o",
+    &measured,
+    "-q",
+    "--no-chroma",
+    "--crop",
+    "512:256:0:32",
+    "--scale",
+    "256x128",
+  ]);
+  assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+  // The same grain as measured against a copy of the source scaled beforehand.
+  let reference = path(&dir, "reference.tbl");
+  assert!(
+    regrain(&["diff", &scaled, &clean, "-o", &reference, "-q", "--no-chroma"])
+      .status
+      .success()
+  );
+  assert_eq!(luma(&measured), luma(&reference));
+  let larger = regrain(&["diff", &noisy, &clean, "-o", &unscaled, "-q", "--scale", "1024x640"]);
+  assert!(String::from_utf8_lossy(&larger.stderr).contains("smaller"));
   let _ = std::fs::remove_dir_all(&dir);
 }
 

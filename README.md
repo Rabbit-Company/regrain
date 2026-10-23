@@ -55,8 +55,8 @@ A build that is too new for the CPU crashes with an illegal instruction error an
 On Linux and macOS:
 
 ```sh
-tar -xzf regrain-v0.3.1-linux-x86_64-v3.tar.gz
-sudo install regrain-v0.3.1-linux-x86_64-v3/regrain /usr/local/bin/
+tar -xzf regrain-v0.3.2-linux-x86_64-v3.tar.gz
+sudo install regrain-v0.3.2-linux-x86_64-v3/regrain /usr/local/bin/
 ```
 
 The macOS binaries are not signed. If macOS refuses to open it, clear the quarantine flag once:
@@ -104,21 +104,22 @@ regrain diff <SOURCE> <DENOISED> -o <TABLE>
 
 `SOURCE` is the original video with grain. `DENOISED` is the same video after denoising, or `-` to read it as y4m from standard input. Both must have the same constant frame rate and start on the same frame. regrain checks both: it stops with `variable_frame_rate` when the frame timestamps are irregular, and with `misaligned` when the moving parts of the pictures match better one frame apart.
 
-| Option                                 | Default     | Meaning                                                                                 |
-| -------------------------------------- | ----------- | --------------------------------------------------------------------------------------- |
-| `--scan <full\|half\|quarter\|eighth>` | `full`      | How much of the video to measure. See below                                             |
-| `-j, --threads <N>`                    | all threads | Worker threads                                                                          |
-| `--no-chroma`                          | off         | Measure luma grain only                                                                 |
-| `--crop <W:H:X:Y>`                     | none        | Area of the source that the denoised video covers, when the denoised video was cropped  |
-| `--start <SECONDS>`                    | 0           | Start measuring this far into both videos                                               |
-| `--duration <SECONDS>`                 | whole video | Measure only this much                                                                  |
-| `--scene-threshold <N>`                | 4           | Brightness change between frames that starts a new scene, on a 0 to 255 scale           |
-| `--merge <N>`                          | 0.08        | How alike neighbouring scenes must be to share one table entry, from 0 to 1             |
-| `--output-depth <8\|10\|12>`           | 10          | Bit depth of the AV1 encode the grain will be added to                                  |
-| `--just-enough [<DEVIATION>]`          | off, 0.5    | Put back only enough grain to hide banding. See below                                   |
-| `--strict`                             | off         | Fail with `frames_differ` instead of warning when many frames differ between the videos |
-| `-v, --verbose`                        | off         | Print what was measured for every scene                                                 |
-| `-y, --overwrite`                      | off         | Replace an existing output file                                                         |
+| Option                                 | Default     | Meaning                                                                                          |
+| -------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------ |
+| `--scan <full\|half\|quarter\|eighth>` | `full`      | How much of the video to measure. See below                                                      |
+| `-j, --threads <N>`                    | all threads | Worker threads                                                                                   |
+| `--no-chroma`                          | off         | Measure luma grain only                                                                          |
+| `--crop <W:H:X:Y>`                     | none        | Area of the source that the denoised video covers, when the denoised video was cropped           |
+| `--scale <WxH>`                        | none        | Size the source is scaled to with Lanczos after `--crop`, when the denoised video was downscaled |
+| `--start <SECONDS>`                    | 0           | Start measuring this far into both videos                                                        |
+| `--duration <SECONDS>`                 | whole video | Measure only this much                                                                           |
+| `--scene-threshold <N>`                | 4           | Brightness change between frames that starts a new scene, on a 0 to 255 scale                    |
+| `--merge <N>`                          | 0.08        | How alike neighbouring scenes must be to share one table entry, from 0 to 1                      |
+| `--output-depth <8\|10\|12>`           | 10          | Bit depth of the AV1 encode the grain will be added to                                           |
+| `--just-enough [<DEVIATION>]`          | off, 0.5    | Put back only enough grain to hide banding. See below                                            |
+| `--strict`                             | off         | Fail with `frames_differ` instead of warning when many frames differ between the videos          |
+| `-v, --verbose`                        | off         | Print what was measured for every scene                                                          |
+| `-y, --overwrite`                      | off         | Replace an existing output file                                                                  |
 
 Table timestamps start at zero at the first measured frame. With `--start`, the table describes the measured range and not the whole video.
 
@@ -313,19 +314,19 @@ Every command accepts `--progress <text|json|none>`. `-q` is the same as `--prog
 
 With `--progress json`, regrain writes one JSON object per line to standard output and nothing else there. Messages from ffmpeg still go to standard error. Every object has an `event` field:
 
-| Event      | Sent by                  | When                                                                |
-| ---------- | ------------------------ | ------------------------------------------------------------------- |
-| `start`    | `diff`, `stats`, `check` | After both videos were probed, or the table was read                |
-| `progress` | `diff`, `stats`, `check` | About twice a second for `diff`, four times for `stats` and `check` |
-| `finding`  | `check`                  | For every problem found                                             |
-| `summary`  | every command            | When the command succeeded                                          |
-| `error`    | every command            | When the command failed                                             |
+| Event      | Sent by                                               | When                                                                             |
+| ---------- | ----------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `start`    | `diff`, `stats`, `check`, `apply`, `remove`, `export` | After both videos were probed, or the table was read, or when the command begins |
+| `progress` | `diff`, `stats`, `check`, `apply`, `remove`, `export` | About twice a second, four times for `stats` and `check`                         |
+| `finding`  | `check`                                               | For every problem found                                                          |
+| `summary`  | every command                                         | When the command succeeded                                                       |
+| `error`    | every command                                         | When the command failed                                                          |
 
 ```json
 {"event":"start","command":"diff","frames":720,"width":1440,"height":1080,"bit_depth":8,"fps":23.976,"scan":"quarter","threads":16}
 {"event":"progress","frames":312,"total":720,"percent":43.333,"fps":71.5,"elapsed_seconds":4.364,"eta_seconds":6}
 {"event":"summary","command":"diff","output":"grain.tbl","frames":720,"frames_expected":720,"scenes":38,"entries":38,"mismatched_frames":0,"luma_deviation":0.824,"scan":"quarter","threads":16,"fps":94.26,"seconds":7.638,"timings":{"probe_seconds":0.185,"measure_seconds":7.217,"fit_seconds":0.236},"warnings":[]}
-{"event":"error","code":"size_mismatch","message":"the source is 1440x1080 and the denoised video is 1408x1080, use --crop to cut the source to the same area"}
+{"event":"error","code":"size_mismatch","message":"the source is 1440x1080 and the denoised video is 1408x1080, use --crop to cut the source to the same area, and --scale when the denoised video was downscaled"}
 ```
 
 In `start` and `progress`, `frames` and `total` count the frames the chosen scan will measure. Values that are not known are `null`.
@@ -335,6 +336,14 @@ In `start` and `progress`, `frames` and `total` count the frames the chosen scan
 ```json
 {"event":"start","command":"stats","entries":172000,"threads":16}
 {"event":"progress","entries":5120,"total":172000,"percent":2.977,"entries_per_second":5028.583,"elapsed_seconds":1.018,"eta_seconds":33}
+```
+
+`apply`, `remove` and `export` go through the video in stages, which `progress` names in `stage`: `read` finds the frames and their grain, `write` writes the output, and `verify` decodes it with dav1d. `frames`, `total`, `fps` and `eta_seconds` are for the stage, and `total` is `null` while reading, since the number of frames is not known yet. `percent` is for the whole command: reading and writing take 50% each, or 10% each with `--verify`, since decoding takes far longer. `export` only reads, so its `percent` is `null`. Every stage gets a `progress` event when it begins:
+
+```json
+{"event":"start","command":"remove"}
+{"event":"progress","stage":"read","frames":1,"total":null,"percent":0.0,"fps":0.0,"elapsed_seconds":0.001,"eta_seconds":null}
+{"event":"progress","stage":"verify","frames":10721,"total":172628,"percent":24.976,"fps":15995.4,"elapsed_seconds":1.204,"eta_seconds":10}
 ```
 
 A `finding` has `severity` (`error` or `warning`), `code`, `entry`, `line`, `start_seconds`, `message` and `fixable`. `entry` and `start_seconds` are `null` for a problem with the table as a whole:
@@ -383,7 +392,7 @@ The exit code is 0 on success, 130 when cancelled with Ctrl+C or SIGTERM, and 1 
 | `unsupported_output`   | The output extension is not supported                                                              |
 | `invalid_bitstream`    | The AV1 stream could not be parsed                                                                 |
 | `frame_rate_mismatch`  | The two videos of `diff` have different frame rates                                                |
-| `size_mismatch`        | The source does not match the denoised picture size, even after `--crop`                           |
+| `size_mismatch`        | The source does not match the denoised picture size, even after `--crop` and `--scale`             |
 | `frame_count_mismatch` | The two videos of `diff` have different frame counts                                               |
 | `variable_frame_rate`  | One of the videos of `diff` has a variable frame rate                                              |
 | `misaligned`           | The two videos of `diff` are off by at least one frame, or could not be read at matching positions |

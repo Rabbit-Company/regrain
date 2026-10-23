@@ -2,6 +2,17 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.2 - 2026-10-23
+
+### Features
+
+- `apply`, `remove` and `export` report progress: `start` and `progress` events with `--progress json`, with the `stage` they are in (`read`, `write` or `verify`) and a `percent` for the whole command, and a progress line on standard error with text output. Verifying, which decodes the whole output with dav1d, reports the frames decoded. With `--progress json`, their output now begins with a `start` event.
+- `diff --scale WIDTHxHEIGHT` scales the source with Lanczos after `--crop`, for a denoised video or encode that was downscaled, such as a 4K original encoded at 1080p. Before, the source had to be scaled into a lossless copy first. Only frames a sampled scan measures are scaled. The table is the same as with a source scaled beforehand.
+
+### Other changes
+
+- Uses rabbit-av1 0.1.2, whose decoder check reports the frames it has decoded.
+
 ## 0.3.1 - 2026-10-23
 
 ### Features

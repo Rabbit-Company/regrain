@@ -63,6 +63,9 @@ pub struct DiffOptions {
   pub threads: usize,
   pub chroma: bool,
   pub crop: Option<String>,
+  // Size the source is scaled to after the crop, with Lanczos as Rabbit Encoder and most
+  // encoding pipelines downscale.
+  pub scale: Option<(usize, usize)>,
   pub start: f64,
   pub duration: Option<f64>,
   pub scene_threshold: f64,
@@ -418,15 +421,22 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
       ),
     ));
   }
-  let (source_width, source_height) = match &options.crop {
+  let cropped = match &options.crop {
     Some(crop) => parse_crop(crop)?,
     None => (source_info.width, source_info.height),
   };
+  if options.scale.is_some_and(|(width, height)| width > cropped.0 || height > cropped.1) {
+    return Err(fail(
+      "invalid_argument",
+      "--scale can only make the source smaller, grain measured on an enlarged source is not the grain of either video",
+    ));
+  }
+  let (source_width, source_height) = options.scale.unwrap_or(cropped);
   if (source_width, source_height) != (denoised_info.width, denoised_info.height) {
     return Err(fail(
       "size_mismatch",
       format!(
-        "the source is {source_width}x{source_height} and the denoised video is {}x{}, use --crop to cut the source to the same area",
+        "the source is {source_width}x{source_height} and the denoised video is {}x{}, use --crop to cut the source to the same area, and --scale when the denoised video was downscaled",
         denoised_info.width, denoised_info.height
       ),
     ));
@@ -486,11 +496,12 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     format: stream_format,
     ..layout
   };
-  let spec = |path: &PathBuf, crop: Option<String>, intra_only: bool, seek_offset: f64| StreamSpec {
+  let spec = |path: &PathBuf, crop: Option<String>, scale: Option<(usize, usize)>, intra_only: bool, seek_offset: f64| StreamSpec {
     path: path.clone(),
     ffmpeg: options.ffmpeg.clone(),
     format: stream_format,
     crop,
+    scale,
     intra_only,
     fps,
     start_seconds: options.start,
@@ -503,10 +514,17 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     spec(
       &options.source,
       options.crop.clone(),
+      options.scale,
       source_info.is_intra_only() && !from_stdin,
       source_info.seek_offset,
     ),
-    spec(&options.denoised, None, denoised_info.is_intra_only(), denoised_info.seek_offset),
+    spec(
+      &options.denoised,
+      None,
+      None,
+      denoised_info.is_intra_only(),
+      denoised_info.seek_offset,
+    ),
   ];
   specs[1].stdin = from_stdin;
   let expected = frames.map(|total| {

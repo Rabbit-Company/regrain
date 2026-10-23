@@ -244,13 +244,13 @@ dependencies = [
 
 [[package]]
 name = "rabbit-av1"
-version = "0.1.1"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "380a35abaf57654599524db0c2b82d4d56e2a164f4c8dc3076bfc631d298caa8"
+checksum = "7e4be8342adc4cc905d667ed47ed6728b60b3081fd704cf03d5511b027d0309c"
 
 [[package]]
 name = "regrain"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "clap",
