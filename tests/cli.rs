@@ -638,8 +638,10 @@ fn check_reports_findings_and_fixes_tables() {
   let result = regrain(&["check", &broken, "--fix", &fixed, "--progress", "json"]);
   assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stdout));
   let summary = String::from_utf8(result.stdout).unwrap();
+  // JSON escapes the backslashes of a Windows path.
+  let escaped = fixed.replace('\\', "\\\\");
   assert!(
-    summary.ends_with(&format!("\"errors\":1,\"warnings\":2,\"output\":\"{fixed}\"}}\n")),
+    summary.ends_with(&format!("\"errors\":1,\"warnings\":2,\"output\":\"{escaped}\"}}\n")),
     "{summary}"
   );
   let text = std::fs::read_to_string(&fixed).unwrap();
