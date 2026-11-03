@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct StreamSpec {
@@ -16,6 +17,7 @@ pub struct StreamSpec {
   pub fps: f64,
   pub start_seconds: f64,
   pub seek_offset: f64,
+  pub frame_times: Option<Arc<Vec<f64>>>,
   pub threads: usize,
   pub frame_bytes: usize,
   pub stdin: bool,
@@ -83,7 +85,15 @@ impl ChunkDecoder {
     let spec = &self.spec;
     let mut command = Command::new(&spec.ffmpeg);
     command.args(["-v", "error", "-nostdin", "-threads", &spec.threads.to_string()]);
-    let seek = spec.start_seconds + if start > 0 { (start as f64 - 0.5) / spec.fps } else { 0.0 };
+    let seek = match &spec.frame_times {
+      // --start counts frames at the nominal rate. Halfway to the frame before keeps rounded timestamps on the right frame.
+      Some(times) => match (spec.start_seconds * spec.fps).round() as usize + start as usize {
+        0 => 0.0,
+        index if index < times.len() => (times[index - 1] + times[index]) / 2.0,
+        _ => times[times.len() - 1] + 0.5 / spec.fps,
+      },
+      None => spec.start_seconds + if start > 0 { (start as f64 - 0.5) / spec.fps } else { 0.0 },
+    };
     if seek > 0.0 {
       let seek = seek + spec.seek_offset;
       command.args(["-ss", &format!("{seek:.6}")]);

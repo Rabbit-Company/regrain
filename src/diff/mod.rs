@@ -15,6 +15,7 @@ use rabbit_av1::grain::{ChromaFormat, GrainParams};
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -76,6 +77,8 @@ pub struct DiffOptions {
   pub output_depth: u8,
   // Largest grain deviation to put back, on the 0 to 255 scale.
   pub just_enough: Option<f64>,
+  // Pair the frames of variable frame rate videos in order, seeking by their real timestamps.
+  pub allow_vfr: bool,
 }
 
 pub struct DiffReport {
@@ -389,17 +392,21 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
   if options.source.as_os_str() == "-" {
     return Err(fail("invalid_argument", "only the denoised video can come from standard input"));
   }
-  let source_info = probe(&options.source, &ffprobe)?;
-  let denoised_info = if from_stdin {
+  let mut source_info = probe(&options.source, &ffprobe)?;
+  let mut denoised_info = if from_stdin {
     probe::probe_y4m_stdin()?
   } else {
     probe(&options.denoised, &ffprobe)?
   };
-  for (info, path) in [(&source_info, &options.source), (&denoised_info, &options.denoised)] {
+  for (info, path) in [(&mut source_info, &options.source), (&mut denoised_info, &options.denoised)] {
     if path.as_os_str() == "-" {
       continue;
     }
     if info.is_variable_frame_rate() || info.has_irregular_timestamps(path, &ffprobe)? {
+      if options.allow_vfr {
+        info.load_frame_times(path, &ffprobe)?;
+        continue;
+      }
       return Err(fail(
         "variable_frame_rate",
         format!(
@@ -496,7 +503,12 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     format: stream_format,
     ..layout
   };
-  let spec = |path: &PathBuf, crop: Option<String>, scale: Option<(usize, usize)>, intra_only: bool, seek_offset: f64| StreamSpec {
+  let spec = |path: &PathBuf,
+              crop: Option<String>,
+              scale: Option<(usize, usize)>,
+              intra_only: bool,
+              seek_offset: f64,
+              frame_times: &Option<Arc<Vec<f64>>>| StreamSpec {
     path: path.clone(),
     ffmpeg: options.ffmpeg.clone(),
     format: stream_format,
@@ -506,6 +518,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     fps,
     start_seconds: options.start,
     seek_offset,
+    frame_times: frame_times.clone(),
     threads: decode_threads,
     frame_bytes: stream_layout.frame_samples() * bytes_per_sample,
     stdin: false,
@@ -517,6 +530,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
       options.scale,
       source_info.is_intra_only() && !from_stdin,
       source_info.seek_offset,
+      &source_info.frame_times,
     ),
     spec(
       &options.denoised,
@@ -524,6 +538,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
       None,
       denoised_info.is_intra_only(),
       denoised_info.seek_offset,
+      &denoised_info.frame_times,
     ),
   ];
   specs[1].stdin = from_stdin;

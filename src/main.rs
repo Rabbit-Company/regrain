@@ -110,6 +110,9 @@ enum Command {
     /// Fail instead of warning when many frames differ between the two videos
     #[arg(long)]
     strict: bool,
+    /// Accept variable frame rate videos whose frames match one to one, paired in order and timed at the nominal frame rate
+    #[arg(long)]
+    allow_vfr: bool,
     /// Bit depth of the AV1 encode the grain will be added to
     #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(8..=12))]
     output_depth: u8,
@@ -603,6 +606,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       merge,
       verbose,
       strict,
+      allow_vfr,
       output_depth,
       just_enough,
       overwrite,
@@ -638,6 +642,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         verbose,
         output_depth,
         just_enough,
+        allow_vfr,
       };
       let (table, report) = diff::run(&options)?;
       let differ = report.mismatched * 5 > report.frames;

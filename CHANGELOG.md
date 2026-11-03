@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.3 - 2026-11-03
+
+### Features
+
+- `diff --allow-vfr` accepts variable frame rate videos whose frames match one to one, such as a source with 24 and 30 fps stretches and an encode of it fed to the encoder frame by frame. regrain reads the timestamp of every frame and seeks to it, pairs the frames in order and times the table at the nominal frame rate. Before, such a source had to be remuxed to a constant frame rate first.
+
 ## 0.3.2 - 2026-10-23
 
 ### Features

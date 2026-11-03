@@ -55,8 +55,8 @@ A build that is too new for the CPU crashes with an illegal instruction error an
 On Linux and macOS:
 
 ```sh
-tar -xzf regrain-v0.3.2-linux-x86_64-v3.tar.gz
-sudo install regrain-v0.3.2-linux-x86_64-v3/regrain /usr/local/bin/
+tar -xzf regrain-v0.3.3-linux-x86_64-v3.tar.gz
+sudo install regrain-v0.3.3-linux-x86_64-v3/regrain /usr/local/bin/
 ```
 
 The macOS binaries are not signed. If macOS refuses to open it, clear the quarantine flag once:
@@ -102,7 +102,7 @@ Building for the local CPU with `-C target-cpu=native` made no measurable differ
 regrain diff <SOURCE> <DENOISED> -o <TABLE>
 ```
 
-`SOURCE` is the original video with grain. `DENOISED` is the same video after denoising, or `-` to read it as y4m from standard input. Both must have the same constant frame rate and start on the same frame. regrain checks both: it stops with `variable_frame_rate` when the frame timestamps are irregular, and with `misaligned` when the moving parts of the pictures match better one frame apart.
+`SOURCE` is the original video with grain. `DENOISED` is the same video after denoising, or `-` to read it as y4m from standard input. Both must have the same constant frame rate and start on the same frame. regrain checks both: it stops with `variable_frame_rate` when the frame timestamps are irregular, and with `misaligned` when the moving parts of the pictures match better one frame apart. With `--allow-vfr`, a variable frame rate video is accepted when its frames match the other video's one to one, such as a source and an encode of it fed to the encoder frame by frame. regrain reads the timestamps of every frame to find them, pairs the frames in order and times the table at the nominal frame rate, as the encoder saw them. `--start` then counts frames at the nominal frame rate.
 
 | Option                                 | Default     | Meaning                                                                                          |
 | -------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------ |
@@ -118,6 +118,7 @@ regrain diff <SOURCE> <DENOISED> -o <TABLE>
 | `--output-depth <8\|10\|12>`           | 10          | Bit depth of the AV1 encode the grain will be added to                                           |
 | `--just-enough [<DEVIATION>]`          | off, 0.5    | Put back only enough grain to hide banding. See below                                            |
 | `--strict`                             | off         | Fail with `frames_differ` instead of warning when many frames differ between the videos          |
+| `--allow-vfr`                          | off         | Accept variable frame rate videos whose frames match one to one. See above                       |
 | `-v, --verbose`                        | off         | Print what was measured for every scene                                                          |
 | `-y, --overwrite`                      | off         | Replace an existing output file                                                                  |
 
@@ -394,7 +395,7 @@ The exit code is 0 on success, 130 when cancelled with Ctrl+C or SIGTERM, and 1 
 | `frame_rate_mismatch`  | The two videos of `diff` have different frame rates                                                |
 | `size_mismatch`        | The source does not match the denoised picture size, even after `--crop` and `--scale`             |
 | `frame_count_mismatch` | The two videos of `diff` have different frame counts                                               |
-| `variable_frame_rate`  | One of the videos of `diff` has a variable frame rate                                              |
+| `variable_frame_rate`  | One of the videos of `diff` has a variable frame rate and `--allow-vfr` was not given              |
 | `misaligned`           | The two videos of `diff` are off by at least one frame, or could not be read at matching positions |
 | `frames_differ`        | With `--strict`, many frames differ between the two videos of `diff`                               |
 | `verify_failed`        | `--verify` found a frame with the wrong grain, or dav1d could not decode the output                |
@@ -474,7 +475,7 @@ Peak memory was 185 MB for 1080p and 1.2 GB for 4K with 16 threads. Very large f
 
 ## Limits
 
-- Both inputs of `diff` need the same constant frame rate and the same frame alignment. regrain refuses variable frame rate and stops when the videos are off by a frame.
+- Both inputs of `diff` need the same constant frame rate and the same frame alignment. regrain refuses variable frame rate unless `--allow-vfr` is given, and stops when the videos are off by a frame.
 - `diff` needs flat areas to measure grain. A scene without any takes the values of the scene before it.
 - The AV1 grain model allows 14 brightness points for luma, 10 for chroma, and a filter that reaches 3 pixels. Grain that is coarser than that cannot be reproduced exactly.
 - MKV, WebM and MP4 are read and written through ffmpeg. Writing them needs free space for a temporary copy of the video track.

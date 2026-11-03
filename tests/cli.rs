@@ -397,6 +397,69 @@ fn diff_seeks_to_matching_frames_when_the_video_starts_late() {
 }
 
 #[test]
+fn diff_pairs_frames_of_variable_frame_rate_videos_in_order() {
+  let dir = workspace("vfr");
+  let clean = path(&dir, "clean.mkv");
+  let noisy = path(&dir, "noisy.mkv");
+  let clean_args = [
+    "-f",
+    "lavfi",
+    "-i",
+    "testsrc2=size=256x192:rate=30",
+    "-frames:v",
+    "480",
+    "-pix_fmt",
+    "yuv420p",
+    "-c:v",
+    "ffv1",
+    &clean,
+  ];
+  // The same frames marked as 30 fps but timed as mostly 24 fps film with a 30 fps stretch. An encode fed them in order is plain 30 fps.
+  let noisy_args = [
+    "-i",
+    &clean,
+    "-vf",
+    "settb=1/1000,setpts='if(lt(N,200),N/24,if(lt(N,280),200/24+(N-200)/30,200/24+80/30+(N-280)/24))/TB',noise=c0s=6:c0f=t",
+    "-fps_mode",
+    "passthrough",
+    "-enc_time_base",
+    "1/1000",
+    "-c:v",
+    "ffv1",
+    &noisy,
+  ];
+  if !ffmpeg(&clean_args) || !ffmpeg(&noisy_args) {
+    eprintln!("skipped: ffmpeg is not available");
+    return;
+  }
+  let table = path(&dir, "vfr.tbl");
+  let refused = regrain(&["diff", &noisy, &clean, "-o", &table, "--progress", "json"]);
+  assert!(!refused.status.success());
+  assert!(String::from_utf8_lossy(&refused.stdout).contains("variable_frame_rate"));
+  for scan in ["full", "quarter"] {
+    let result = regrain(&[
+      "diff",
+      &noisy,
+      &clean,
+      "-o",
+      &table,
+      "-y",
+      "--allow-vfr",
+      "--scan",
+      scan,
+      "--progress",
+      "json",
+      "--threads",
+      "4",
+    ]);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(result.status.success(), "{stdout}");
+    assert!(stdout.contains("\"mismatched_frames\":0,"), "{stdout}");
+  }
+  let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn matroska_output_keeps_tracks_interleaved() {
   let dir = workspace("interleave");
   let clean = path(&dir, "clean.mkv");

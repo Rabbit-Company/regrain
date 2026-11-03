@@ -3,6 +3,7 @@ use anyhow::{Context, Result, bail};
 use std::io::BufRead;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PixelFormat {
@@ -80,6 +81,8 @@ pub struct VideoInfo {
   pub duration: Option<f64>,
   pub average_fps: Option<f64>,
   pub seek_offset: f64,
+  // Presentation time of every frame from the first one, read for a variable frame rate video.
+  pub frame_times: Option<Arc<Vec<f64>>>,
 }
 
 impl VideoInfo {
@@ -116,6 +119,33 @@ impl VideoInfo {
       .with_context(|| format!("failed to run {ffprobe}"))
       .code("ffmpeg_missing")?;
     Ok(irregular_timestamps(&String::from_utf8_lossy(&output.stdout), self.fps()))
+  }
+
+  // The timestamps of every packet, in presentation order. Frames are then counted
+  // exactly and found by their own time instead of their number over the frame rate.
+  pub fn load_frame_times(&mut self, path: &Path, ffprobe: &str) -> Result<()> {
+    let output = Command::new(ffprobe)
+      .args([
+        "-v",
+        "error",
+        "-select_streams",
+        "V:0",
+        "-show_entries",
+        "packet=pts_time",
+        "-of",
+        "csv=p=0",
+      ])
+      .arg(path)
+      .output()
+      .with_context(|| format!("failed to run {ffprobe}"))
+      .code("ffmpeg_missing")?;
+    let times = frame_times(&String::from_utf8_lossy(&output.stdout));
+    if times.is_empty() {
+      return Err(fail("unsupported_input", format!("{} has no frame timestamps", path.display())));
+    }
+    self.frames = Some(times.len() as u64);
+    self.frame_times = Some(Arc::new(times));
+    Ok(())
   }
 
   // Container statistics tags survive cutting and remuxing, so a tag that promises far
@@ -180,6 +210,17 @@ fn irregular_timestamps(text: &str, fps: f64) -> bool {
   deltas >= 20 && irregular * 50 > deltas
 }
 
+fn frame_times(text: &str) -> Vec<f64> {
+  let mut times: Vec<f64> = text
+    .lines()
+    .filter_map(|line| line.trim().trim_end_matches(',').parse().ok())
+    .collect();
+  times.sort_by(f64::total_cmp);
+  let first = times.first().copied().unwrap_or(0.0);
+  times.iter_mut().for_each(|time| *time -= first);
+  times
+}
+
 fn parse_clock(value: &str) -> Option<f64> {
   let mut seconds = 0.0;
   for part in value.split(':') {
@@ -223,6 +264,7 @@ fn parse_y4m_header(line: &str) -> Result<VideoInfo> {
     duration: None,
     average_fps: None,
     seek_offset: 0.0,
+    frame_times: None,
   };
   for field in fields {
     let (tag, value) = field.split_at(field.len().min(1));
@@ -297,6 +339,7 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
     duration: None,
     average_fps: None,
     seek_offset: 0.0,
+    frame_times: None,
   };
   for line in text.lines() {
     let Some((key, value)) = line.split_once('=') else { continue };
@@ -381,6 +424,7 @@ mod tests {
       duration: Some(120.0),
       average_fps: Some(23.976),
       seek_offset: 0.0,
+      frame_times: None,
     };
     assert!(!info.is_variable_frame_rate());
     info.average_fps = Some(23.5);
