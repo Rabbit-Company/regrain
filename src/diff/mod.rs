@@ -508,6 +508,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
               scale: Option<(usize, usize)>,
               intra_only: bool,
               seek_offset: f64,
+              stream_start: f64,
               frame_times: &Option<Arc<Vec<f64>>>| StreamSpec {
     path: path.clone(),
     ffmpeg: options.ffmpeg.clone(),
@@ -518,6 +519,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     fps,
     start_seconds: options.start,
     seek_offset,
+    stream_start,
     frame_times: frame_times.clone(),
     threads: decode_threads,
     frame_bytes: stream_layout.frame_samples() * bytes_per_sample,
@@ -530,6 +532,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
       options.scale,
       source_info.is_intra_only() && !from_stdin,
       source_info.seek_offset,
+      source_info.stream_start,
       &source_info.frame_times,
     ),
     spec(
@@ -538,6 +541,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
       None,
       denoised_info.is_intra_only(),
       denoised_info.seek_offset,
+      denoised_info.stream_start,
       &denoised_info.frame_times,
     ),
   ];

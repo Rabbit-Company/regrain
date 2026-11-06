@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.4 - 2026-11-07
+
+### Fixes
+
+- `diff` read every part of an IVF file after the first one starting one frame early, so an AV1 encode measured against its source failed with `misaligned` at the first stretch with enough motion to show it. ffmpeg keeps the frame still on screen at the seek time when frames carry a duration, as in IVF, and drops it when they do not, as in most Matroska files. regrain now seeks two frames early and picks the first frame by its own timestamp, so both kinds of file land on the same frame.
+
 ## 0.3.3 - 2026-11-03
 
 ### Features

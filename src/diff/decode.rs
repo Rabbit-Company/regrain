@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 
+const SEEK_MARGIN_FRAMES: f64 = 2.0;
+
 #[derive(Clone, Debug)]
 pub struct StreamSpec {
   pub path: PathBuf,
@@ -17,6 +19,7 @@ pub struct StreamSpec {
   pub fps: f64,
   pub start_seconds: f64,
   pub seek_offset: f64,
+  pub stream_start: f64,
   pub frame_times: Option<Arc<Vec<f64>>>,
   pub threads: usize,
   pub frame_bytes: usize,
@@ -94,15 +97,16 @@ impl ChunkDecoder {
       },
       None => spec.start_seconds + if start > 0 { (start as f64 - 0.5) / spec.fps } else { 0.0 },
     };
+    let mut filters = Vec::new();
     if seek > 0.0 {
-      let seek = seek + spec.seek_offset;
-      command.args(["-ss", &format!("{seek:.6}")]);
+      let early = (seek - SEEK_MARGIN_FRAMES / spec.fps).max(0.0);
+      command.args(["-copyts", "-ss", &format!("{:.6}", early + spec.seek_offset)]);
+      filters.push(format!("select='gte(t\\,{:.6})'", spec.stream_start + seek));
     }
     command.arg("-i").arg(&spec.path).args(["-map", "0:V:0", "-an", "-sn", "-dn"]);
     if let Some(frames) = frames {
       command.args(["-frames:v", &frames.to_string()]);
     }
-    let mut filters = Vec::new();
     if let Some(crop) = &spec.crop {
       filters.push(format!("crop={crop}"));
     }

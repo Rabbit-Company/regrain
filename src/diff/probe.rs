@@ -81,6 +81,8 @@ pub struct VideoInfo {
   pub duration: Option<f64>,
   pub average_fps: Option<f64>,
   pub seek_offset: f64,
+  // Presentation time of the first frame, as the file stores it.
+  pub stream_start: f64,
   // Presentation time of every frame from the first one, read for a variable frame rate video.
   pub frame_times: Option<Arc<Vec<f64>>>,
 }
@@ -264,6 +266,7 @@ fn parse_y4m_header(line: &str) -> Result<VideoInfo> {
     duration: None,
     average_fps: None,
     seek_offset: 0.0,
+    stream_start: 0.0,
     frame_times: None,
   };
   for field in fields {
@@ -339,6 +342,7 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
     duration: None,
     average_fps: None,
     seek_offset: 0.0,
+    stream_start: 0.0,
     frame_times: None,
   };
   for line in text.lines() {
@@ -377,6 +381,9 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
       "start_time" => start_times.push(value.parse::<f64>().ok()),
       _ => {}
     }
+  }
+  if let Some(Some(stream)) = start_times.first() {
+    info.stream_start = *stream;
   }
   if let [Some(stream), Some(format)] = start_times[..] {
     info.seek_offset = (stream - format).max(0.0);
@@ -424,6 +431,7 @@ mod tests {
       duration: Some(120.0),
       average_fps: Some(23.976),
       seek_offset: 0.0,
+      stream_start: 0.0,
       frame_times: None,
     };
     assert!(!info.is_variable_frame_rate());
