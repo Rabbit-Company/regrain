@@ -7,7 +7,8 @@ const MIN_BIN_BLOCKS: u64 = 16;
 const SMOOTHING_BLOCKS: f64 = 150.0;
 const MEAN_CAP: f64 = 8.0;
 const MIN_STRICT_BLOCKS: u64 = 100;
-const MIN_CORRELATION_WEIGHT: f64 = 24.0;
+const MIN_CORRELATION_BLOCKS: u64 = 24;
+const MIN_CROSS_WEIGHT: f64 = 24.0;
 const MIN_NATIVE_VARIANCE: f64 = 0.02;
 const MIN_NATIVE_SIGMA: f64 = 0.25;
 const LAG_TOLERANCE: f64 = 1.004;
@@ -267,10 +268,7 @@ pub fn ar_for_correlation(rho: impl Fn(i32, i32) -> f64, lag: i32) -> Vec<f64> {
       }
     }
   }
-  stats.weight = MIN_CORRELATION_WEIGHT;
-  for value in &mut stats.correlation {
-    *value *= MIN_CORRELATION_WEIGHT;
-  }
+  stats.samples = MIN_CORRELATION_BLOCKS;
   fit_ar(&stats, lag, false).coeffs
 }
 
@@ -280,12 +278,12 @@ fn fit_ar(stats: &PlaneStats, lag: i32, with_luma: bool) -> ArFit {
     luma_coeff: 0.0,
     error: 1.0,
   };
-  if stats.weight < MIN_CORRELATION_WEIGHT {
+  if stats.samples < MIN_CORRELATION_BLOCKS || stats.weight <= 0.0 {
     return white;
   }
   let rho: Vec<f64> = (0..LAGS).map(|i| stats.correlation[i] / stats.weight).collect();
   let offsets = ar_offsets(lag);
-  let use_luma = with_luma && stats.cross_weight >= MIN_CORRELATION_WEIGHT;
+  let use_luma = with_luma && stats.cross_weight >= MIN_CROSS_WEIGHT;
   let n = offsets.len() + usize::from(use_luma);
   if n == 0 {
     return white;
@@ -497,7 +495,7 @@ pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, source_roundin
     }
   }
   let luma = &planes[0];
-  let rho = if luma.weight >= MIN_CORRELATION_WEIGHT {
+  let rho = if luma.samples >= MIN_CORRELATION_BLOCKS && luma.weight > 0.0 {
     [
       luma.correlation[lag_index(1, 0)] / luma.weight,
       luma.correlation[lag_index(0, 1)] / luma.weight,

@@ -90,8 +90,12 @@ pub struct PlaneStats {
   pub constant: Vec<u32>,
   // Measured blocks by the luma level of the denoised picture.
   pub levels: Vec<u32>,
+  // Each block adds its correlation weighted by its grain variance, so `correlation / weight`
+  // is the correlation of all the grain together and blocks with strong grain decide it.
   pub correlation: [f64; LAGS],
   pub weight: f64,
+  // Blocks the correlation was measured on.
+  pub samples: u64,
   pub cross: [f64; CROSS],
   pub luma_power: f64,
   pub cross_weight: f64,
@@ -106,6 +110,7 @@ impl Default for PlaneStats {
       levels: vec![0; 256],
       correlation: [0.0; LAGS],
       weight: 0.0,
+      samples: 0,
       cross: [0.0; CROSS],
       luma_power: 0.0,
       cross_weight: 0.0,
@@ -133,6 +138,7 @@ impl PlaneStats {
       self.cross[i] += other.cross[i];
     }
     self.weight += other.weight;
+    self.samples += other.samples;
     self.luma_power += other.luma_power;
     self.cross_weight += other.cross_weight;
   }
@@ -154,6 +160,7 @@ impl PlaneStats {
       self.cross[i] += other.cross[i];
     }
     self.weight += other.weight;
+    self.samples += other.samples;
     self.luma_power += other.luma_power;
     self.cross_weight += other.cross_weight;
     self.blocks += other.blocks;
@@ -167,6 +174,7 @@ pub struct PlaneFrame {
   pub levels: Vec<u8>,
   pub correlation: [f64; LAGS],
   pub weight: f64,
+  pub samples: u64,
   pub cross: [f64; CROSS],
   pub luma_power: f64,
   pub cross_weight: f64,
@@ -180,6 +188,7 @@ impl Default for PlaneFrame {
       levels: Vec::new(),
       correlation: [0.0; LAGS],
       weight: 0.0,
+      samples: 0,
       cross: [0.0; CROSS],
       luma_power: 0.0,
       cross_weight: 0.0,
@@ -316,6 +325,33 @@ fn centre(values: &mut [i16], shift_done: bool, sum: i64) -> i64 {
     let centred = (*value as i32 * scale as i32 - mean).clamp(-FIXED_LIMIT, FIXED_LIMIT);
     *value = centred as i16;
     power += (centred * centred) as i64;
+  }
+  power
+}
+
+// Removes the slope of a centred block, which an encoder or denoiser leaves in the
+// difference and which would count as correlation at every distance. Returns the power left.
+fn remove_plane(values: &mut [i16], bw: usize, bh: usize) -> i64 {
+  let (mx, my) = ((bw as f64 - 1.0) / 2.0, (bh as f64 - 1.0) / 2.0);
+  let (mut sx, mut sy) = (0.0, 0.0);
+  for y in 0..bh {
+    for x in 0..bw {
+      let value = values[y * bw + x] as f64;
+      sx += (x as f64 - mx) * value;
+      sy += (y as f64 - my) * value;
+    }
+  }
+  let n = (bw * bh) as f64;
+  let ax = sx / (n * (bw as f64 * bw as f64 - 1.0) / 12.0);
+  let ay = sy / (n * (bh as f64 * bh as f64 - 1.0) / 12.0);
+  let mut power = 0i64;
+  for y in 0..bh {
+    for x in 0..bw {
+      let value = &mut values[y * bw + x];
+      let flat = (*value as f64 - ax * (x as f64 - mx) - ay * (y as f64 - my)).round() as i32;
+      *value = flat.clamp(-FIXED_LIMIT, FIXED_LIMIT) as i16;
+      power += (flat * flat) as i64;
+    }
   }
   power
 }
@@ -489,8 +525,13 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
           continue;
         }
         let weight = info.residual_variance / (info.residual_variance + noise_floor);
-        correlate(block, bw, bh, power, weight, &mut stats.correlation);
-        stats.weight += weight;
+        let flat_power = remove_plane(block, bw, bh);
+        if flat_power > 0 {
+          let variance = flat_power as f64 / (bw * bh) as f64 / (1 << (2 * FIXED_SHIFT)) as f64;
+          correlate(block, bw, bh, flat_power, variance, &mut stats.correlation);
+          stats.weight += variance;
+          stats.samples += 1;
+        }
         if plane == 0 {
           continue;
         }
@@ -642,5 +683,37 @@ mod tests {
       "flat blocks must count as strictly flat"
     );
     assert!(result.planes[1].weight > 0.0);
+  }
+
+  // Half the blocks hold strong white grain. The other half hold a faint, strongly correlated
+  // difference on a slope, as an encoder leaves where it smoothed dim texture. The strong
+  // grain decides the pattern and the slope adds nothing.
+  #[test]
+  fn strong_grain_decides_the_pattern() {
+    let format = PixelFormat {
+      bit_depth: 10,
+      mono: true,
+      subsampling_x: true,
+      subsampling_y: true,
+    };
+    let layout = Layout {
+      width: 256,
+      height: 128,
+      format,
+    };
+    let (mut source, denoised) = noise_frame(&layout, 4.0, 7);
+    for y in 0..layout.height {
+      for x in layout.width / 2..layout.width {
+        let i = y * layout.width + x;
+        let wave = 1.5 * (std::f64::consts::TAU * x as f64 / 12.0).sin();
+        let slope = (x % BLOCK) as f64 / 8.0;
+        source[i] = (denoised[i] as f64 + wave + slope).round() as u16;
+      }
+    }
+    let result = analyze(&layout, 0, &source, &denoised, &mut Scratch::default());
+    let luma = &result.planes[0];
+    assert_eq!(luma.samples, 32);
+    let rho = luma.correlation[lag_index(1, 0)] / luma.weight;
+    assert!(rho.abs() < 0.1, "rho {rho}");
   }
 }

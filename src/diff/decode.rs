@@ -26,6 +26,20 @@ pub struct StreamSpec {
   pub stdin: bool,
 }
 
+// Where the frame `start` frames past --start begins. --start counts frames at the nominal
+// rate. Seeking halfway to the frame before keeps the right frame when a container stores
+// rounded timestamps, as Matroska does in milliseconds, and the frame's falls just below its
+// real time.
+fn seek_time(start_seconds: f64, fps: f64, start: u64, frame_times: Option<&[f64]>) -> f64 {
+  let index = (start_seconds * fps).round() as usize + start as usize;
+  match (index, frame_times) {
+    (0, _) => 0.0,
+    (index, Some(times)) if index < times.len() => (times[index - 1] + times[index]) / 2.0,
+    (_, Some(times)) => times[times.len() - 1] + 0.5 / fps,
+    (index, None) => (index as f64 - 0.5) / fps,
+  }
+}
+
 // A stretch of frames, of which the first `window` of every `period` are read.
 #[derive(Clone, Copy, Debug)]
 pub struct Chunk {
@@ -88,15 +102,7 @@ impl ChunkDecoder {
     let spec = &self.spec;
     let mut command = Command::new(&spec.ffmpeg);
     command.args(["-v", "error", "-nostdin", "-threads", &spec.threads.to_string()]);
-    let seek = match &spec.frame_times {
-      // --start counts frames at the nominal rate. Halfway to the frame before keeps rounded timestamps on the right frame.
-      Some(times) => match (spec.start_seconds * spec.fps).round() as usize + start as usize {
-        0 => 0.0,
-        index if index < times.len() => (times[index - 1] + times[index]) / 2.0,
-        _ => times[times.len() - 1] + 0.5 / spec.fps,
-      },
-      None => spec.start_seconds + if start > 0 { (start as f64 - 0.5) / spec.fps } else { 0.0 },
-    };
+    let seek = seek_time(spec.start_seconds, spec.fps, start, spec.frame_times.as_deref().map(Vec::as_slice));
     let mut filters = Vec::new();
     if seek > 0.0 {
       let early = (seek - SEEK_MARGIN_FRAMES / spec.fps).max(0.0);
@@ -286,6 +292,18 @@ impl Drop for ChunkDecoder {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn seeks_halfway_to_the_frame_before() {
+    let fps = 24000.0 / 1001.0;
+    // Frame 121755 starts at 5078.198125 s and Matroska stores it as 5078.198.
+    let seek = seek_time(121755.0 / fps, fps, 0, None);
+    assert!(seek < 5078.198 && seek > 121754.0 / fps, "{seek}");
+    assert_eq!(seek_time(0.0, fps, 0, None), 0.0);
+    assert!((seek_time(0.0, fps, 10, None) - 9.5 / fps).abs() < 1e-9);
+    let times: Vec<f64> = (0..20).map(|i| (i as f64 / fps * 1000.0).round() / 1000.0).collect();
+    assert!((seek_time(5.0 / fps, fps, 2, Some(&times)) - (times[6] + times[7]) / 2.0).abs() < 1e-12);
+  }
 
   #[test]
   fn maps_sampled_frames_to_their_positions() {

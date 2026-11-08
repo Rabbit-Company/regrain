@@ -2,6 +2,13 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.6 - 2026-11-08
+
+### Fixes
+
+- `diff` drew grain coarser and more clumped than the source's. Every flat block counted almost the same in the grain pattern, so faint blocks decided it in scenes with large dark areas, where an encoder or denoiser also smooths dim texture and leaves a coarser difference. In a dark scene of an anime Blu-ray with fine grain, neighbouring grain pixels were alike by 0.11 in the source and by 0.25 in the encode, and still by 0.16 three pixels apart where the source had 0.03. regrain now measures the pattern over the grain of all blocks together, so blocks with strong grain decide it, and takes out the slope of each block first. The same encode now has 0.14 and 0.06.
+- `diff --start` began one frame late when the container stored the first frame's timestamp rounded down, as Matroska does in milliseconds for about half the frames at 23.976 fps. Both videos started on the same later frame, so the pairing stayed right, but the table described the video one frame later than asked. regrain now seeks halfway to the frame before, as it already did for every later part of the video.
+
 ## 0.3.5 - 2026-11-08
 
 ### Fixes
