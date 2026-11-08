@@ -132,7 +132,7 @@ pub struct Curve {
 }
 
 impl Curve {
-  pub fn measure(stats: &PlaneStats, bit_depth: u8, output_depth: u8) -> Curve {
+  pub fn measure(stats: &PlaneStats, bit_depth: u8, output_depth: u8, source_rounding: f64) -> Curve {
     let step = (bit_depth as f64 - output_depth as f64).exp2();
     let native = (1u64 << (2 * (bit_depth - 8))) as f64;
     let mut curve = Curve {
@@ -148,7 +148,7 @@ impl Curve {
       if total < MIN_BIN_BLOCKS {
         continue;
       }
-      curve.sigma[bin] = sigma_before_rounding(capped_mean(histogram, total) * native, step);
+      curve.sigma[bin] = sigma_before_rounding(capped_mean(histogram, total) * native - source_rounding, step);
       valid[bin] = true;
     }
     let known: Vec<usize> = (0..BINS).filter(|&bin| valid[bin]).collect();
@@ -338,21 +338,82 @@ fn choose_lag(stats: &PlaneStats, with_luma: bool) -> i32 {
     .unwrap_or(3)
 }
 
+// The levels to cut the grain to zero at, at or below the lowest and at or above the
+// highest. At least one point stays between them.
+fn choose_cuts(constant: &[u32], measured: &[u32], xs: &[usize]) -> (Option<usize>, Option<usize>) {
+  let net: Vec<i64> = (0..256).map(|level| constant[level] as i64 - measured[level] as i64).collect();
+  // below_gain[l] is the gain of a cut at l against no cut, above_gain[l] the same upwards.
+  let mut below_gain = vec![0i64; 256];
+  let mut above_gain = vec![0i64; 256];
+  let mut total = 0;
+  for level in 0..256 {
+    total += net[level];
+    below_gain[level] = total;
+  }
+  total = 0;
+  for level in (0..256).rev() {
+    total += net[level];
+    above_gain[level] = total;
+  }
+  let blank = |level: usize| constant[level] as u64 >= MIN_BIN_BLOCKS;
+  // best_high[l] is the best upper cut at level l or above, the lowest one on a tie.
+  let mut best_high: Vec<(i64, Option<usize>)> = vec![(0, None); 257];
+  for level in (0..256).rev() {
+    best_high[level] = best_high[level + 1];
+    if blank(level) && above_gain[level] > 0 && above_gain[level] >= best_high[level].0 {
+      best_high[level] = (above_gain[level], Some(level));
+    }
+  }
+  let mut best = (0i64, None, None);
+  let lows = std::iter::once(None).chain((0..256).filter(|&l| blank(l) && below_gain[l] > 0).map(Some));
+  for low in lows {
+    // The upper cut has to leave the lowest point above the lower cut.
+    let Some(&kept) = xs.iter().find(|&&x| low.is_none_or(|l| x > l)) else {
+      break;
+    };
+    let (high_gain, high) = best_high[kept + 1];
+    let gain = low.map_or(0, |l| below_gain[l]) + high_gain;
+    // On a tie the higher lower cut wins, as it takes less grain away.
+    if gain > best.0 || (gain == best.0 && gain > 0) {
+      best = (gain, low, high);
+    }
+  }
+  (best.1, best.2)
+}
+
 // AV1 holds the first and last scaling values for every level beyond them. Where the
 // source has no grain at such a level, such as letterbox bars, the grain is cut to zero
 // there and comes back in full one level further in. Picture areas at that exact level,
 // such as pure black with grain, lose their grain too, since AV1 cannot tell them apart.
 // Cutting further in to cover encoders that miss black by one level cost more grain in
 // such areas than it saved in the bars.
-fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32]) -> Vec<[u8; 2]> {
+//
+// The two cuts go where together they keep the most blocks right: grain free blocks at or
+// beyond each cut, less the measured blocks beyond it that lose their grain. A few flat
+// blocks an encoder darkened below black would otherwise put the first point under black
+// and stop the cut there.
+fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32], measured: &[u32]) -> Vec<[u8; 2]> {
+  let centre = |bin: usize| bin * 256 / BINS + 128 / BINS;
   let mut points: Vec<(f64, f64)> = (0..BINS)
     .filter(|&bin| curve.counts[bin] >= MIN_BIN_BLOCKS)
-    .map(|bin| ((bin * 256 / BINS + 128 / BINS) as f64, (curve.sigma[bin] * scale).min(255.0)))
+    .map(|bin| (centre(bin) as f64, (curve.sigma[bin] * scale).min(255.0)))
     .collect();
-  let (first, last) = (points[0].0 as usize, points[points.len() - 1].0 as usize);
-  let blank = |level: &usize| constant[*level] as u64 >= MIN_BIN_BLOCKS;
-  let below = (0..first).rev().find(blank);
-  let above = (last + 1..256).find(blank);
+  let (below, above) = choose_cuts(constant, measured, &points.iter().map(|p| p.0 as usize).collect::<Vec<_>>());
+  points.retain(|p| below.is_none_or(|b| p.0 as usize > b) && above.is_none_or(|a| (p.0 as usize) < a));
+  // A cut inside a measured bin drops its point, but the blocks of that bin lie at the
+  // levels next to the cut, so the edge there takes their grain.
+  let edge_value = |edge: usize, dropped: bool| -> Option<f64> {
+    let bin = edge * BINS / 256;
+    (dropped && curve.counts[bin] >= MIN_BIN_BLOCKS).then(|| (curve.sigma[bin] * scale).min(255.0))
+  };
+  let low_edge = below.and_then(|level| edge_value(level + 1, centre((level + 1) * BINS / 256) <= level));
+  let high_edge = above.and_then(|level| edge_value(level - 1, centre((level - 1) * BINS / 256) >= level));
+  if let (Some(level), Some(value)) = (below, low_edge) {
+    points.insert(0, (level as f64 + 1.0, value));
+  }
+  if let (Some(level), Some(value)) = (above, high_edge) {
+    points.push((level as f64 - 1.0, value));
+  }
   // The cut points depend on where the simplified range ends, which moves when an end point is dropped.
   let cuts = |points: &[(f64, f64)]| -> usize {
     below.map_or(0, |level| 1 + usize::from((level as f64 + 1.0) < points[0].0))
@@ -388,14 +449,14 @@ fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32]
     points.remove(remove);
   }
   if let Some(level) = below {
-    let edge = (level as f64 + 1.0, points[0].1);
+    let edge = (level as f64 + 1.0, low_edge.unwrap_or(points[0].1));
     if edge.0 < points[0].0 {
       points.insert(0, edge);
     }
     points.insert(0, (level as f64, 0.0));
   }
   if let Some(level) = above {
-    let edge = (level as f64 - 1.0, points[points.len() - 1].1);
+    let edge = (level as f64 - 1.0, high_edge.unwrap_or(points[points.len() - 1].1));
     if edge.0 > points[points.len() - 1].0 {
       points.push(edge);
     }
@@ -420,10 +481,13 @@ impl Fit {
 }
 
 // `cap` limits the grain at every brightness to a deviation on the 0 to 255 scale.
-pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, cap: Option<f64>) -> Fit {
+pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, source_rounding: f64, cap: Option<f64>) -> Fit {
   let planes = run.effective();
   let bit_depth = format.bit_depth;
-  let mut curves: Vec<Curve> = planes.iter().map(|plane| Curve::measure(plane, bit_depth, output_depth)).collect();
+  let mut curves: Vec<Curve> = planes
+    .iter()
+    .map(|plane| Curve::measure(plane, bit_depth, output_depth, source_rounding))
+    .collect();
   if let Some(cap) = cap {
     let native = cap * (1u32 << (bit_depth - 8)) as f64;
     for curve in &mut curves {
@@ -549,15 +613,27 @@ pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, cap: Option<f6
   params.scaling_shift = scaling_shift;
   let unit = (1u32 << scaling_shift) as f64;
   params.scaling_points_y = if luma_active {
-    scaling_points(&curves[0], unit / stds[0], MAX_LUMA_POINTS, &planes[0].constant)
+    scaling_points(&curves[0], unit / stds[0], MAX_LUMA_POINTS, &planes[0].constant, &planes[0].levels)
   } else {
     Vec::new()
   };
   if actives[1] {
-    params.scaling_points_cb = scaling_points(&curves[1], unit / stds[1], MAX_CHROMA_POINTS, &planes[1].constant);
+    params.scaling_points_cb = scaling_points(
+      &curves[1],
+      unit / stds[1],
+      MAX_CHROMA_POINTS,
+      &planes[1].constant,
+      &planes[1].levels,
+    );
   }
   if actives[2] {
-    params.scaling_points_cr = scaling_points(&curves[2], unit / stds[2], MAX_CHROMA_POINTS, &planes[2].constant);
+    params.scaling_points_cr = scaling_points(
+      &curves[2],
+      unit / stds[2],
+      MAX_CHROMA_POINTS,
+      &planes[2].constant,
+      &planes[2].levels,
+    );
   }
   for points in [
     &mut params.scaling_points_y,
@@ -582,6 +658,15 @@ pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, cap: Option<f6
 mod tests {
   use super::*;
 
+  // Measured blocks at the centre level of their bin.
+  fn centred(curve: &Curve) -> [u32; 256] {
+    let mut levels = [0u32; 256];
+    for bin in 0..BINS {
+      levels[bin * 256 / BINS + 128 / BINS] = curve.counts[bin] as u32;
+    }
+    levels
+  }
+
   #[test]
   fn rounding_model_matches_known_values() {
     assert!((rounded_variance(10.0) - 100.0833).abs() < 0.01);
@@ -595,6 +680,19 @@ mod tests {
     // Measured in 8 bit and added in 10 bit, the rounding is a sixteenth as strong.
     let finer = sigma_before_rounding(1.0, 0.25);
     assert!((finer * finer - (1.0 - 1.0 / 192.0)).abs() < 0.01, "{finer}");
+  }
+
+  #[test]
+  fn leaves_out_the_rounding_of_a_coarser_source() {
+    // Grain of 0.5 on the 0 to 255 scale, measured in 10 bit against an 8 bit source,
+    // carries the twelfth of a squared 8 bit step that rounding the source added.
+    let mut stats = PlaneStats::default();
+    let bucket = super::super::analyze::variance_bucket(0.25 + 1.0 / 12.0);
+    stats.histogram[10 * BUCKETS + bucket] = 200;
+    let with = Curve::measure(&stats, 10, 10, 16.0 / 12.0).sigma[10] / 4.0;
+    let without = Curve::measure(&stats, 10, 10, 0.0).sigma[10] / 4.0;
+    assert!((with - 0.5).abs() < 0.04, "{with}");
+    assert!((without - (0.25f64 + 1.0 / 12.0).sqrt()).abs() < 0.04, "{without}");
   }
 
   #[test]
@@ -625,7 +723,7 @@ mod tests {
     for bin in 0..BINS {
       curve.sigma[bin] = 2.0 + ((bin as f64) * 0.9).sin();
     }
-    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &[0; 256]);
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &[0; 256], &centred(&curve));
     assert!(points.len() <= MAX_LUMA_POINTS && points.len() >= 4);
     assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]));
     let flat = Curve {
@@ -633,7 +731,7 @@ mod tests {
       counts: [100; BINS],
       active: true,
     };
-    let points = scaling_points(&flat, 16.0, MAX_LUMA_POINTS, &[0; 256]);
+    let points = scaling_points(&flat, 16.0, MAX_LUMA_POINTS, &[0; 256], &centred(&flat));
     assert_eq!(points.len(), 1);
     assert_eq!(points[0][1], 24);
   }
@@ -653,7 +751,7 @@ mod tests {
     constant[16] = 500;
     constant[128] = 500;
     constant[235] = 500;
-    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant);
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant, &centred(&curve));
     assert!(points.len() <= MAX_LUMA_POINTS, "{points:?}");
     assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]), "{points:?}");
     assert_eq!(points[0], [16, 0]);
@@ -667,7 +765,7 @@ mod tests {
     assert!(points[1..n - 1].iter().all(|point| point[1] > 0));
 
     constant[235] = MIN_BIN_BLOCKS as u32 - 1;
-    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant);
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant, &centred(&curve));
     assert_ne!(points[points.len() - 1][1], 0);
   }
 
@@ -686,9 +784,120 @@ mod tests {
     let first = 2 * 256 / BINS + 128 / BINS;
     let mut constant = [0u32; 256];
     constant[first - 1] = 500;
-    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant);
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant, &centred(&curve));
     assert!(points.len() <= MAX_LUMA_POINTS, "{} points: {points:?}", points.len());
     assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]), "{points:?}");
     assert_eq!(points[0], [(first - 1) as u8, 0]);
+  }
+
+  // Counts from the black opening of an encode measured against its source, where 22 flat
+  // blocks of the encode sat below black and put the first point under it.
+  fn black_opening() -> (Curve, [u32; 256]) {
+    let counts = [0, 22, 5911, 3801, 995, 639, 458, 331, 275, 197, 145, 133, 100, 63, 16, 1, 1, 0, 1];
+    let mut curve = Curve {
+      sigma: [0.0; BINS],
+      counts: [0; BINS],
+      active: true,
+    };
+    for (bin, &count) in counts.iter().enumerate() {
+      curve.counts[bin] = count;
+      curve.sigma[bin] = if count > 0 { 1.0 + bin as f64 * 0.05 } else { 0.0 };
+    }
+    let mut constant = [0u32; 256];
+    for (level, count) in [
+      (16, 62134),
+      (17, 737),
+      (18, 969),
+      (19, 508),
+      (20, 880),
+      (21, 298),
+      (22, 1088),
+      (23, 444),
+      (24, 632),
+    ] {
+      constant[level] = count;
+    }
+    (curve, constant)
+  }
+
+  fn value_at(points: &[[u8; 2]], level: u8) -> u8 {
+    if level <= points[0][0] {
+      return points[0][1];
+    }
+    for pair in points.windows(2) {
+      if level <= pair[1][0] {
+        let t = (level - pair[0][0]) as f64 / (pair[1][0] - pair[0][0]) as f64;
+        return (pair[0][1] as f64 * (1.0 - t) + pair[1][1] as f64 * t).round() as u8;
+      }
+    }
+    points[points.len() - 1][1]
+  }
+
+  #[test]
+  fn cuts_black_that_an_encoder_undershot() {
+    let (curve, constant) = black_opening();
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant, &centred(&curve));
+    assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]), "{points:?}");
+    assert_eq!(value_at(&points, 16), 0, "{points:?}");
+    assert_eq!(points[0], [19, 0], "{points:?}");
+    assert!(value_at(&points, 20) > 0, "{points:?}");
+    assert!(value_at(&points, 40) > 0, "{points:?}");
+  }
+
+  #[test]
+  fn cuts_black_and_white_apart_in_a_bright_scene() {
+    let mut curve = Curve {
+      sigma: [0.0; BINS],
+      counts: [0; BINS],
+      active: true,
+    };
+    for bin in 25..30 {
+      curve.sigma[bin] = 1.0 + bin as f64 * 0.05;
+      curve.counts[bin] = 200;
+    }
+    let mut constant = [0u32; 256];
+    constant[16] = 5000;
+    constant[235] = 3000;
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant, &centred(&curve));
+    assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]), "{points:?}");
+    assert_eq!(value_at(&points, 16), 0, "{points:?}");
+    assert!(value_at(&points, 210) > 0, "{points:?}");
+    assert_eq!(value_at(&points, 235), 0, "{points:?}");
+  }
+
+  // Counts from a bright scene clipped at white, whose top bin holds grainy blocks just under the clip.
+  #[test]
+  fn keeps_grain_under_clipped_white() {
+    let mut curve = Curve {
+      sigma: [0.0; BINS],
+      counts: [0; BINS],
+      active: true,
+    };
+    for (bin, count) in [(23, 1), (24, 12), (25, 18), (26, 37), (27, 75), (28, 327), (29, 1463)] {
+      curve.counts[bin] = count;
+      curve.sigma[bin] = if bin == 29 { 0.4 } else { 1.0 };
+    }
+    let mut measured = centred(&curve);
+    measured[236] = 0;
+    measured[233] = 500;
+    measured[234] = 700;
+    measured[235] = 263;
+    let mut constant = [0u32; 256];
+    constant[235] = 1301;
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant, &measured);
+    assert!(points.windows(2).all(|pair| pair[1][0] > pair[0][0]), "{points:?}");
+    assert!(value_at(&points, 220) > 0, "{points:?}");
+    // The top bin measured less grain near the clip, and the level under the cut keeps it.
+    assert_eq!(value_at(&points, 234), 6, "{points:?}");
+    assert_eq!(value_at(&points, 235), 0, "{points:?}");
+  }
+
+  #[test]
+  fn keeps_grain_below_black_when_the_picture_outweighs_the_bars() {
+    let (mut curve, mut constant) = black_opening();
+    curve.counts[1] = 5000;
+    constant = constant.map(|count| count / 200);
+    let points = scaling_points(&curve, 16.0, MAX_LUMA_POINTS, &constant, &centred(&curve));
+    assert!(points[0][1] > 0, "{points:?}");
   }
 }

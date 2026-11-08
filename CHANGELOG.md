@@ -2,6 +2,13 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.5 - 2026-11-08
+
+### Fixes
+
+- `diff` gave pure black grain when a scene also had a few flat blocks just below black, as an encode measured against its source often has. The grain was cut to zero only below the darkest measured level, so those few blocks moved the cut under black, and the decoder then drew the grain of the darkest point on every black frame. regrain now counts measured blocks by level, as it counts the grain free ones, and places the cut where it keeps the most blocks right. The same rule now also cuts the grain at clipped white instead of drawing it there. The levels next to a cut keep the grain measured at them, so a highlight just under clipped white gets its own weaker grain and not that of the brighter mid tones.
+- `diff` measured an 8 bit source against a 10 bit encode with the rounding of the source's own 8 bits counted as grain, a deviation of 0.29 on the 0 to 255 scale. A screen rounds the output to whole steps again, so faint grain came out too strong: a clean logo got 0.53 where the source had 0.38. regrain now takes that rounding away, unless `--scale` filters the source at the measured depth.
+
 ## 0.3.4 - 2026-11-07
 
 ### Fixes

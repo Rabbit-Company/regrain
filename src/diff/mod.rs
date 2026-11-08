@@ -316,7 +316,14 @@ impl Collector {
   }
 }
 
-fn build_segments(mut runs: Vec<Run>, format: PixelFormat, tolerance: f64, output_depth: u8, cap: Option<f64>) -> Vec<(u64, Fit)> {
+fn build_segments(
+  mut runs: Vec<Run>,
+  format: PixelFormat,
+  tolerance: f64,
+  output_depth: u8,
+  source_rounding: f64,
+  cap: Option<f64>,
+) -> Vec<(u64, Fit)> {
   while runs.len() > 1 {
     let Some(poor) = runs.iter().position(|run| run.stats.luma_blocks() < MIN_RUN_BLOCKS) else {
       break;
@@ -329,14 +336,17 @@ fn build_segments(mut runs: Vec<Run>, format: PixelFormat, tolerance: f64, outpu
       runs[0].start = run.start;
     }
   }
-  let mut fits: Vec<Fit> = runs.iter().map(|run| fit(&run.stats, format, output_depth, cap)).collect();
+  let mut fits: Vec<Fit> = runs
+    .iter()
+    .map(|run| fit(&run.stats, format, output_depth, source_rounding, cap))
+    .collect();
   let mut index = 0;
   while index + 1 < runs.len() {
     if fits[index].similar(&fits[index + 1], tolerance) {
       let next = runs.remove(index + 1);
       fits.remove(index + 1);
       runs[index].stats.merge(&next.stats);
-      fits[index] = fit(&runs[index].stats, format, output_depth, cap);
+      fits[index] = fit(&runs[index].stats, format, output_depth, source_rounding, cap);
     } else {
       index += 1;
     }
@@ -449,6 +459,15 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     ));
   }
   let stream_format = PixelFormat::parse(&denoised_info.pix_fmt).code("unsupported_input")?;
+  // An 8 bit source measured against a 10 bit encode carries the rounding of its own 8 bits.
+  // A scaled source is filtered at the measured depth, which smooths that rounding away.
+  let source_depth = PixelFormat::parse(&source_info.pix_fmt).map_or(stream_format.bit_depth, |f| f.bit_depth);
+  let source_rounding = if options.scale.is_none() && source_depth < stream_format.bit_depth {
+    let step = (1u32 << (stream_format.bit_depth - source_depth)) as f64;
+    step * step / 12.0
+  } else {
+    0.0
+  };
   let mut format = stream_format;
   if !options.chroma {
     format.mono = true;
@@ -698,6 +717,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     format,
     options.merge_tolerance,
     options.output_depth,
+    source_rounding,
     options.just_enough,
   );
   let mut table = GrainTable::default();

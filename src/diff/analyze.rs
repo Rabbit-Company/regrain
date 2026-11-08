@@ -88,6 +88,8 @@ pub struct PlaneStats {
   pub histogram: Vec<u32>,
   // Blocks without any grain in the source, such as letterbox bars, by luma level.
   pub constant: Vec<u32>,
+  // Measured blocks by the luma level of the denoised picture.
+  pub levels: Vec<u32>,
   pub correlation: [f64; LAGS],
   pub weight: f64,
   pub cross: [f64; CROSS],
@@ -101,6 +103,7 @@ impl Default for PlaneStats {
     Self {
       histogram: vec![0; BINS * BUCKETS],
       constant: vec![0; 256],
+      levels: vec![0; 256],
       correlation: [0.0; LAGS],
       weight: 0.0,
       cross: [0.0; CROSS],
@@ -118,6 +121,9 @@ impl PlaneStats {
     }
     for &level in &other.constant {
       self.constant[level as usize] += 1;
+    }
+    for &level in &other.levels {
+      self.levels[level as usize] += 1;
     }
     self.blocks += other.observations.len() as u64;
     for i in 0..LAGS {
@@ -138,6 +144,9 @@ impl PlaneStats {
     for (a, b) in self.constant.iter_mut().zip(&other.constant) {
       *a += b;
     }
+    for (a, b) in self.levels.iter_mut().zip(&other.levels) {
+      *a += b;
+    }
     for i in 0..LAGS {
       self.correlation[i] += other.correlation[i];
     }
@@ -155,6 +164,7 @@ impl PlaneStats {
 pub struct PlaneFrame {
   pub observations: Vec<u16>,
   pub constant: Vec<u8>,
+  pub levels: Vec<u8>,
   pub correlation: [f64; LAGS],
   pub weight: f64,
   pub cross: [f64; CROSS],
@@ -167,6 +177,7 @@ impl Default for PlaneFrame {
     Self {
       observations: Vec::new(),
       constant: Vec::new(),
+      levels: Vec::new(),
       correlation: [0.0; LAGS],
       weight: 0.0,
       cross: [0.0; CROSS],
@@ -457,6 +468,7 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
         let bin = scratch.luma_bins[cell] as usize;
         let bucket = variance_bucket(info.residual_variance / variance_scale);
         stats.observations.push((bin * BUCKETS + bucket) as u16);
+        stats.levels.push(result.thumbnail[cell]);
         if info.residual_variance <= 0.0 {
           continue;
         }
