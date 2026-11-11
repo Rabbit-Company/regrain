@@ -104,6 +104,8 @@ regrain diff <SOURCE> <DENOISED> -o <TABLE>
 
 `SOURCE` is the original video with grain. `DENOISED` is the same video after denoising, or `-` to read it as y4m from standard input. Both must have the same constant frame rate and start on the same frame. regrain checks both: it stops with `variable_frame_rate` when the frame timestamps are irregular, and with `misaligned` when the moving parts of the pictures match better one frame apart. With `--allow-vfr`, a variable frame rate video is accepted when its frames match the other video's one to one, such as a source and an encode of it fed to the encoder frame by frame. regrain reads the timestamps of every frame to find them, pairs the frames in order and times the table at the nominal frame rate, as the encoder saw them. `--start` then counts frames at the nominal frame rate.
 
+A source whose Matroska track has a pixel crop is measured as ffmpeg decodes it, with the crop already taken off. `--crop` counts in that picture, so a 3840x2160 track with 480 pixels cropped from each side is a 2880x2160 source.
+
 | Option                                 | Default     | Meaning                                                                                          |
 | -------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------ |
 | `--scan <full\|half\|quarter\|eighth>` | `full`      | How much of the video to measure. See below                                                      |

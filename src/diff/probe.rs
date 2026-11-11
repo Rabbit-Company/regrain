@@ -312,7 +312,7 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
   }
   let output = Command::new(ffprobe)
         .args(["-v", "error", "-select_streams", "V:0", "-show_entries"])
-        .arg("stream=codec_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_frames,duration,start_time:stream_tags=NUMBER_OF_FRAMES,DURATION:format=duration,start_time")
+        .arg("stream=codec_name,width,height,pix_fmt,r_frame_rate,avg_frame_rate,nb_frames,duration,start_time:stream_tags=NUMBER_OF_FRAMES,DURATION:stream_side_data=crop_top,crop_bottom,crop_left,crop_right:format=duration,start_time")
         .args(["-of", "default=nw=1"])
         .arg(path)
         .output()
@@ -328,7 +328,14 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
       ),
     ));
   }
-  let text = String::from_utf8_lossy(&output.stdout);
+  let info = parse_probe_output(&String::from_utf8_lossy(&output.stdout));
+  if info.width == 0 || info.height == 0 || info.fps_num == 0 {
+    return Err(fail("unsupported_input", format!("no video stream found in {}", path.display())));
+  }
+  Ok(info)
+}
+
+fn parse_probe_output(text: &str) -> VideoInfo {
   // The stream start time is printed before the format start time.
   let mut start_times = Vec::new();
   let mut info = VideoInfo {
@@ -345,10 +352,15 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
     stream_start: 0.0,
     frame_times: None,
   };
+  let mut crop = [0usize; 4];
   for line in text.lines() {
     let Some((key, value)) = line.split_once('=') else { continue };
     let value = value.trim();
     match key.trim() {
+      "crop_top" => crop[0] = value.parse().unwrap_or(0),
+      "crop_bottom" => crop[1] = value.parse().unwrap_or(0),
+      "crop_left" => crop[2] = value.parse().unwrap_or(0),
+      "crop_right" => crop[3] = value.parse().unwrap_or(0),
       "codec_name" => info.codec = value.to_string(),
       "width" => info.width = value.parse().unwrap_or(0),
       "height" => info.height = value.parse().unwrap_or(0),
@@ -388,10 +400,9 @@ pub fn probe(path: &Path, ffprobe: &str) -> Result<VideoInfo> {
   if let [Some(stream), Some(format)] = start_times[..] {
     info.seek_offset = (stream - format).max(0.0);
   }
-  if info.width == 0 || info.height == 0 || info.fps_num == 0 {
-    return Err(fail("unsupported_input", format!("no video stream found in {}", path.display())));
-  }
-  Ok(info)
+  info.height = info.height.saturating_sub(crop[0] + crop[1]);
+  info.width = info.width.saturating_sub(crop[2] + crop[3]);
+  info
 }
 
 #[cfg(test)]
@@ -478,6 +489,16 @@ mod tests {
     );
     assert!(parse_y4m_header("YUV4MPEG2 W64 H64 F25:1 C444alpha\n").is_err());
     assert!(parse_y4m_header("RIFF").is_err());
+  }
+
+  #[test]
+  fn applies_container_crops() {
+    let text = "codec_name=hevc\nwidth=3840\nheight=2160\npix_fmt=yuv420p10le\nr_frame_rate=24000/1001\nstart_time=0.000000\ncrop_top=0\ncrop_bottom=0\ncrop_left=480\ncrop_right=480\nstart_time=0.000000\nduration=1746.752000\n";
+    let info = parse_probe_output(text);
+    assert_eq!((info.width, info.height), (2880, 2160));
+    assert_eq!(info.duration, Some(1746.752));
+    let plain = parse_probe_output("width=1920\nheight=1080\nr_frame_rate=25/1\n");
+    assert_eq!((plain.width, plain.height), (1920, 1080));
   }
 
   #[test]

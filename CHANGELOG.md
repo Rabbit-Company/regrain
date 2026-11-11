@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.7 - 2026-11-11
+
+### Fixes
+
+- `diff` stopped with `size_mismatch` on a source whose Matroska track has a pixel crop, such as a UHD Blu-ray remux of a 4:3 show stored as 3840x2160 with 480 pixels cropped from each side. ffprobe reports the stored size, but ffmpeg applies the crop when decoding and hands back 2880x2160 frames, so regrain compared the denoised video against a size the source never has. regrain now takes the container crop off the probed size, as ffmpeg does, and `--crop` counts in the picture that is left.
+
 ## 0.3.6 - 2026-11-08
 
 ### Fixes
