@@ -14,6 +14,13 @@ const FIXED_LIMIT: i32 = 4095;
 const FLAT_FLOOR: f64 = 2.0;
 const CORRELATION_BLOCKS: usize = 320;
 const FLAT_BASELINE_RATIO: f64 = 3.0;
+// A block stands still when the denoised picture in it changed by less than this mean
+// square on the 0 to 255 scale, and by less than this share of the grain variance.
+const STILL_LEVELS: f64 = 1.0;
+const STILL_SHARE: f64 = 0.25;
+// The grain is compared between one pair of frames in every five. Five frames do not
+// line up with animation held for two or three frames, so the pairs fall on every phase.
+const MOTION_PERIOD: u64 = 5;
 
 pub fn lag_index(dx: i32, dy: i32) -> usize {
   let (dx, dy) = if dy < 0 || (dy == 0 && dx < 0) { (-dx, -dy) } else { (dx, dy) };
@@ -100,6 +107,11 @@ pub struct PlaneStats {
   pub luma_power: f64,
   pub cross_weight: f64,
   pub blocks: u64,
+  // Grain power of blocks that stand still between two frames, and half the power of how
+  // much their grain changed. Their ratio is the part of the grain that changes every frame.
+  pub still: f64,
+  pub change: f64,
+  pub still_blocks: u64,
 }
 
 impl Default for PlaneStats {
@@ -115,6 +127,9 @@ impl Default for PlaneStats {
       luma_power: 0.0,
       cross_weight: 0.0,
       blocks: 0,
+      still: 0.0,
+      change: 0.0,
+      still_blocks: 0,
     }
   }
 }
@@ -141,6 +156,9 @@ impl PlaneStats {
     self.samples += other.samples;
     self.luma_power += other.luma_power;
     self.cross_weight += other.cross_weight;
+    self.still += other.still;
+    self.change += other.change;
+    self.still_blocks += other.still_blocks;
   }
 
   pub fn merge(&mut self, other: &PlaneStats) {
@@ -164,6 +182,9 @@ impl PlaneStats {
     self.luma_power += other.luma_power;
     self.cross_weight += other.cross_weight;
     self.blocks += other.blocks;
+    self.still += other.still;
+    self.change += other.change;
+    self.still_blocks += other.still_blocks;
   }
 }
 
@@ -178,6 +199,9 @@ pub struct PlaneFrame {
   pub cross: [f64; CROSS],
   pub luma_power: f64,
   pub cross_weight: f64,
+  pub still: f64,
+  pub change: f64,
+  pub still_blocks: u64,
 }
 
 impl Default for PlaneFrame {
@@ -192,6 +216,9 @@ impl Default for PlaneFrame {
       cross: [0.0; CROSS],
       luma_power: 0.0,
       cross_weight: 0.0,
+      still: 0.0,
+      change: 0.0,
+      still_blocks: 0,
     }
   }
 }
@@ -233,6 +260,10 @@ pub struct Scratch {
   partner: Vec<i16>,
   infos: Vec<BlockInfo>,
   textures: Vec<f64>,
+  // Luma residual and denoised luma of the frame analysed before, to see how the grain changes.
+  previous_residual: Vec<i16>,
+  previous_denoised: Vec<u16>,
+  previous_index: Option<u64>,
 }
 
 struct BlockInfo {
@@ -303,6 +334,39 @@ fn block_info<T: Sample>(source: &[T], denoised: &[T], stride: usize, x0: usize,
     constant_source: source_min == source_max,
     residual_sum,
     residual_variance,
+  }
+}
+
+struct BlockMotion {
+  // Mean squared change of the denoised picture.
+  picture: f64,
+  // Grain variance in the frame before.
+  previous: f64,
+  // Variance of the change of the grain.
+  change: f64,
+}
+
+fn block_motion<T: Sample>(denoised: &[T], scratch: &Scratch, stride: usize, x0: usize, y0: usize, bw: usize, bh: usize) -> BlockMotion {
+  let (mut picture, mut previous_sum, mut previous_sq, mut change_sum, mut change_sq) = (0i64, 0i64, 0i64, 0i64, 0i64);
+  for y in 0..bh {
+    let start = (y0 + y) * stride + x0;
+    for x in start..start + bw {
+      let d = denoised[x].value() - scratch.previous_denoised[x] as i32;
+      let previous = scratch.previous_residual[x] as i32;
+      let change = scratch.luma_residual[x] as i32 - previous;
+      picture += (d * d) as i64;
+      previous_sum += previous as i64;
+      previous_sq += (previous * previous) as i64;
+      change_sum += change as i64;
+      change_sq += (change * change) as i64;
+    }
+  }
+  let n = (bw * bh) as f64;
+  let variance = |sum: i64, sq: i64| (sq as f64 / n - (sum as f64 / n).powi(2)).max(0.0);
+  BlockMotion {
+    picture: picture as f64 / n,
+    previous: variance(previous_sum, previous_sq),
+    change: variance(change_sum, change_sq),
   }
 }
 
@@ -429,6 +493,9 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
   scratch.luma_constant.resize(grid_w * grid_h, false);
   scratch.block.resize(BLOCK * BLOCK, 0);
   scratch.partner.resize(BLOCK * BLOCK, 0);
+  let follows = scratch.previous_index.is_some_and(|previous| previous + 1 == index)
+    && scratch.previous_residual.len() == width * height
+    && scratch.previous_denoised.len() == width * height;
 
   let mut offset = 0;
   for plane in 0..layout.planes() {
@@ -508,6 +575,16 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
         if info.residual_variance <= 0.0 {
           continue;
         }
+        if plane == 0 && follows {
+          let motion = block_motion(den, scratch, pw, bx * bw, by * bh, bw, bh);
+          // The picture has to stand still, so the grain is compared at the same place.
+          let limit = (STILL_LEVELS * variance_scale).min(STILL_SHARE * info.residual_variance);
+          if motion.picture <= limit && motion.previous > 0.0 {
+            stats.still += (info.residual_variance + motion.previous) / 2.0;
+            stats.change += motion.change / 2.0;
+            stats.still_blocks += 1;
+          }
+        }
         // The histogram takes every flat block. The correlation needs far fewer to be exact.
         correlated += 1;
         if !(correlated - 1).is_multiple_of(stride) {
@@ -575,6 +652,14 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
     scratch.loose.push(loose);
   }
   result.planes.append(&mut scratch.loose);
+  if index.is_multiple_of(MOTION_PERIOD) {
+    std::mem::swap(&mut scratch.previous_residual, &mut scratch.luma_residual);
+    scratch.previous_denoised.clear();
+    scratch
+      .previous_denoised
+      .extend(denoised[..width * height].iter().map(|&d| d.value() as u16));
+    scratch.previous_index = Some(index);
+  }
   result
 }
 
@@ -683,6 +768,43 @@ mod tests {
       "flat blocks must count as strictly flat"
     );
     assert!(result.planes[1].weight > 0.0);
+  }
+
+  // Grain made of a part that stays in place and a part of the same strength that is new in
+  // every frame changes by half its power from one frame to the next.
+  #[test]
+  fn measures_how_much_grain_changes_between_frames() {
+    let format = PixelFormat {
+      bit_depth: 10,
+      mono: true,
+      subsampling_x: true,
+      subsampling_y: true,
+    };
+    let layout = Layout {
+      width: 256,
+      height: 128,
+      format,
+    };
+    let (still, denoised) = noise_frame(&layout, 3.0, 11);
+    let frame = |seed: u64| -> Vec<u16> {
+      let (moving, _) = noise_frame(&layout, 3.0, seed);
+      still
+        .iter()
+        .zip(&moving)
+        .zip(&denoised)
+        .map(|((&s, &m), &d)| (s as i32 + m as i32 - d as i32) as u16)
+        .collect()
+    };
+    let mut scratch = Scratch::default();
+    let first = analyze(&layout, 0, &frame(21), &denoised, &mut scratch);
+    assert_eq!(first.planes[0].still_blocks, 0);
+    let second = analyze(&layout, 1, &frame(31), &denoised, &mut scratch);
+    let luma = &second.planes[0];
+    assert_eq!(luma.still_blocks, 32);
+    let moving = luma.change / luma.still;
+    assert!((moving - 0.5).abs() < 0.05, "moving share {moving}");
+    let skipped = analyze(&layout, 5, &frame(41), &denoised, &mut scratch);
+    assert_eq!(skipped.planes[0].still_blocks, 0, "frames apart are not compared");
   }
 
   // Half the blocks hold strong white grain. The other half hold a faint, strongly correlated

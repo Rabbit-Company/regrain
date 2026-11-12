@@ -119,6 +119,7 @@ A source whose Matroska track has a pixel crop is measured as ffmpeg decodes it,
 | `--merge <N>`                          | 0.08        | How alike neighbouring scenes must be to share one table entry, from 0 to 1                      |
 | `--output-depth <8\|10\|12>`           | 10          | Bit depth of the AV1 encode the grain will be added to                                           |
 | `--just-enough [<DEVIATION>]`          | off, 0.5    | Put back only enough grain to hide banding. See below                                            |
+| `--full-strength`                      | off         | Put back the grain as strong as in single frames. See below                                      |
 | `--strict`                             | off         | Fail with `frames_differ` instead of warning when many frames differ between the videos          |
 | `--allow-vfr`                          | off         | Accept variable frame rate videos whose frames match one to one. See above                       |
 | `-v, --verbose`                        | off         | Print what was measured for every scene                                                          |
@@ -133,6 +134,12 @@ A clean encode of a denoised video often shows banding in smooth gradients such 
 `--just-enough` keeps the measured grain pattern and its change with brightness, but limits its strength to 0.5 on the 0 to 255 scale, or to the value given. Where the source had less grain than that, the measured grain is kept. Scenes that become alike under the limit share one table entry.
 
 On a slow dark gradient encoded with SVT-AV1 at CRF 30 and shown in 8 bit without dithering, the steps were 0.24 levels off a smooth ramp without grain. With `--just-enough` they were 0.09 off, against 0.09 for the encode itself in 10 bit, so the screen's steps were gone. 0.7 gave 0.08 with 40% more visible grain. Raise the limit when the encoder itself leaves visible steps or blocks.
+
+### Grain that changes from frame to frame
+
+AV1 draws a new grain pattern for every frame. The grain of a source often changes less: part of it stays in place from one frame to the next, such as texture in the artwork of anime or grain that a studio's own processing held still. Put back at the strength of a single frame, such grain shimmers two to three times more than the source's and draws the eye.
+
+By default, `diff` therefore matches how much the grain changes. Where the denoised picture stands still between two frames, it compares the grain in both and measures which part of it changed. Each scene's grain is scaled by the square root of that part, so the new pattern of every frame changes the picture as much as the source's grain did. A scene where nothing stands still, such as a pan, takes the value of the whole video. The scale never goes below 0.3, so gradients keep enough grain to hide banding. `--full-strength` turns this off and puts back the grain as strong as in a single frame. `-v` shows the scale of every scene as `strength`.
 
 A denoiser can pipe its output straight into `diff`, without a lossless file in between:
 
@@ -167,7 +174,7 @@ The table is the same for every thread count.
 4. The strength at each brightness is the mean over all blocks of the scene. Blocks more than 8 times above the median are left out, since those almost always hold removed detail.
 5. The decoder rounds the grain it adds to whole code values of the encode, which adds a little noise of its own. regrain takes that away from the target, at the bit depth given by `--output-depth`. A source with fewer bits than the denoised video, such as an 8 bit Blu-ray measured against a 10 bit encode, also carries the rounding of its own bits, a deviation of 0.29 of its step. A screen shows the output in whole steps again, so regrain takes that away as well. With `--scale` the source is filtered at the measured depth, which smooths its rounding, and nothing is taken away.
 6. The grain pattern is fitted as an AV1 autoregressive filter with the smallest lag that describes it.
-7. regrain then builds the grain the way an AV1 decoder does and measures it, and sets the scaling values so the decoder output has the measured strength.
+7. regrain then builds the grain the way an AV1 decoder does and measures it, and sets the scaling values so the decoder output has the measured strength, scaled to how much the source's grain changes from frame to frame.
 8. Neighbouring scenes with the same grain share one table entry.
 
 Blocks where the source is perfectly constant, such as letterbox bars, are not measured. An AV1 decoder gives every brightness below the darkest scaling point the grain of that point, so regrain sets the grain to zero at the level of such blocks and brings it back one level further in, with the grain measured at the levels next to the cut. Constant blocks at the bright end, such as clipped white, are handled the same way. Bars, black frames and clipped highlights then stay clean. Every brightness beyond a cut gets no grain, so regrain places each cut where it keeps the most blocks right: the constant blocks at or beyond it, less the measured blocks at or beyond it that lose their grain. A few flat blocks that an encoder made slightly darker than black therefore do not stop the cut. Picture areas at exactly the level of a cut, such as pure black with grain, get no grain either, because the decoder chooses the grain by brightness alone.
@@ -418,6 +425,8 @@ The main test video is one episode of Magic Knight Rayearth (1994) from Blu-ray:
 grav1synth 0.2.0 is the current upstream release. grav1synth 0.3.8 is the Rabbit Company fork. Both use the same measuring method.
 
 The computer has an AMD Ryzen 7 7840HS with 8 cores and 16 threads.
+
+The accuracy numbers compare the grain strength in single frames, so their tables were measured as `--full-strength` measures them.
 
 ### Accuracy on the episode
 

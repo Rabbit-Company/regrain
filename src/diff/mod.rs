@@ -79,6 +79,9 @@ pub struct DiffOptions {
   pub just_enough: Option<f64>,
   // Pair the frames of variable frame rate videos in order, seeking by their real timestamps.
   pub allow_vfr: bool,
+  // Put back the grain at the strength measured in single frames, without matching how
+  // much of it changes from frame to frame.
+  pub full_strength: bool,
 }
 
 pub struct DiffReport {
@@ -323,6 +326,7 @@ fn build_segments(
   output_depth: u8,
   source_rounding: f64,
   cap: Option<f64>,
+  match_motion: bool,
 ) -> Vec<(u64, Fit)> {
   while runs.len() > 1 {
     let Some(poor) = runs.iter().position(|run| run.stats.luma_blocks() < MIN_RUN_BLOCKS) else {
@@ -336,17 +340,34 @@ fn build_segments(
       runs[0].start = run.start;
     }
   }
-  let mut fits: Vec<Fit> = runs
-    .iter()
-    .map(|run| fit(&run.stats, format, output_depth, source_rounding, cap))
-    .collect();
+  // A scene where nothing stood still, such as a pan, takes the strength of the whole video.
+  let overall = runs
+    .first()
+    .filter(|_| match_motion)
+    .and_then(|first| {
+      let mut all = RunStats::new(first.stats.planes.len() / 2);
+      for run in &runs {
+        all.merge(&run.stats);
+      }
+      all.motion_strength()
+    })
+    .unwrap_or(1.0);
+  let strength = |stats: &RunStats| {
+    if match_motion {
+      stats.motion_strength().unwrap_or(overall)
+    } else {
+      1.0
+    }
+  };
+  let fit_run = |stats: &RunStats| fit(stats, format, output_depth, source_rounding, strength(stats), cap);
+  let mut fits: Vec<Fit> = runs.iter().map(|run| fit_run(&run.stats)).collect();
   let mut index = 0;
   while index + 1 < runs.len() {
     if fits[index].similar(&fits[index + 1], tolerance) {
       let next = runs.remove(index + 1);
       fits.remove(index + 1);
       runs[index].stats.merge(&next.stats);
-      fits[index] = fit(&runs[index].stats, format, output_depth, source_rounding, cap);
+      fits[index] = fit_run(&runs[index].stats);
     } else {
       index += 1;
     }
@@ -512,10 +533,11 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     };
     plan_chunks(frames, options.scan, limit.is_none(), options.threads, min_chunk)
   };
-  // Each worker holds two decoded frames and the residual of one luma plane. Very
-  // large frames get fewer workers so the total stays within the budget.
+  // Each worker holds two decoded frames, the residual of one luma plane, and the residual
+  // and denoised luma of the frame before. Very large frames get fewer workers so the total
+  // stays within the budget.
   let bytes_per_sample = if format.bit_depth > 8 { 2 } else { 1 };
-  let per_worker = layout.frame_samples() * bytes_per_sample * 2 + layout.width * layout.height * 2 + (16 << 20);
+  let per_worker = layout.frame_samples() * bytes_per_sample * 2 + layout.width * layout.height * 6 + (16 << 20);
   let workers = options.threads.min(MEMORY_BUDGET / per_worker).clamp(1, chunks.len());
   let decode_threads = (options.threads / workers).max(1);
   let stream_layout = Layout {
@@ -719,6 +741,7 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
     options.output_depth,
     source_rounding,
     options.just_enough,
+    !options.full_strength,
   );
   let mut table = GrainTable::default();
   let mut sigma_total = 0.0;
@@ -733,10 +756,11 @@ pub fn run(options: &DiffOptions) -> Result<(GrainTable, DiffReport)> {
         .collect();
       let blocks: u64 = fit.curves[0].counts.iter().sum();
       eprintln!(
-        "scene {index}: frame {start}, deviation {}, correlation {:.2} {:.2}, {blocks} blocks",
+        "scene {index}: frame {start}, deviation {}, correlation {:.2} {:.2}, strength {:.2}, {blocks} blocks",
         means.join(" "),
         fit.rho[0],
-        fit.rho[1]
+        fit.rho[1],
+        fit.strength
       );
       if std::env::var_os("REGRAIN_CURVES").is_some() {
         for (plane, curve) in fit.curves.iter().enumerate() {

@@ -13,6 +13,10 @@ const MIN_NATIVE_VARIANCE: f64 = 0.02;
 const MIN_NATIVE_SIGMA: f64 = 0.25;
 const LAG_TOLERANCE: f64 = 1.004;
 const POINT_TOLERANCE: f64 = 0.4;
+const MIN_STILL_BLOCKS: u64 = 200;
+// Grain that hardly changes in the source still gets this share of its strength, so
+// gradients keep enough grain to hide banding.
+const MIN_MOTION_STRENGTH: f64 = 0.3;
 
 #[derive(Clone, Debug, Default)]
 // Strictly flat blocks of every plane, followed by the loosely flat ones.
@@ -50,6 +54,19 @@ impl RunStats {
 
   pub fn luma_blocks(&self) -> u64 {
     self.planes[0].blocks + self.planes[self.planes.len() / 2].blocks
+  }
+
+  // How strong the grain should be so it changes from frame to frame as much as the
+  // source's does. AV1 draws new grain for every frame, while part of a source's grain
+  // often stays in place. None when too few blocks stood still to tell.
+  pub fn motion_strength(&self) -> Option<f64> {
+    let (strict, loose) = (&self.planes[0], &self.planes[self.planes.len() / 2]);
+    let still = strict.still + loose.still;
+    if strict.still_blocks + loose.still_blocks < MIN_STILL_BLOCKS || still <= 0.0 {
+      return None;
+    }
+    let moving = ((strict.change + loose.change) / still).clamp(0.0, 1.0);
+    Some(moving.sqrt().max(MIN_MOTION_STRENGTH))
   }
 }
 
@@ -467,6 +484,7 @@ fn scaling_points(curve: &Curve, scale: f64, max_points: usize, constant: &[u32]
 pub struct Fit {
   pub curves: Vec<Curve>,
   pub rho: [f64; 2],
+  pub strength: f64,
   pub params: Option<GrainParams>,
 }
 
@@ -478,14 +496,23 @@ impl Fit {
   }
 }
 
-// `cap` limits the grain at every brightness to a deviation on the 0 to 255 scale.
-pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, source_rounding: f64, cap: Option<f64>) -> Fit {
+// `strength` scales the measured grain. `cap` then limits it at every brightness to a
+// deviation on the 0 to 255 scale.
+pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, source_rounding: f64, strength: f64, cap: Option<f64>) -> Fit {
   let planes = run.effective();
   let bit_depth = format.bit_depth;
   let mut curves: Vec<Curve> = planes
     .iter()
     .map(|plane| Curve::measure(plane, bit_depth, output_depth, source_rounding))
     .collect();
+  if strength != 1.0 {
+    for curve in &mut curves {
+      for sigma in &mut curve.sigma {
+        *sigma *= strength;
+      }
+      curve.active = curve.active && curve.sigma.iter().any(|&sigma| sigma >= MIN_NATIVE_SIGMA);
+    }
+  }
   if let Some(cap) = cap {
     let native = cap * (1u32 << (bit_depth - 8)) as f64;
     for curve in &mut curves {
@@ -507,7 +534,12 @@ pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, source_roundin
   let lumaless_420 = format.subsampling_x && format.subsampling_y && !luma_active;
   let chroma_active: Vec<bool> = (1..curves.len()).map(|plane| curves[plane].active && !lumaless_420).collect();
   if !luma_active && !chroma_active.iter().any(|&active| active) {
-    return Fit { curves, rho, params: None };
+    return Fit {
+      curves,
+      rho,
+      strength,
+      params: None,
+    };
   }
 
   let mut lag = if luma_active { choose_lag(luma, false) } else { 0 };
@@ -643,11 +675,17 @@ pub fn fit(run: &RunStats, format: PixelFormat, output_depth: u8, source_roundin
     }
   }
   if params.is_empty() {
-    return Fit { curves, rho, params: None };
+    return Fit {
+      curves,
+      rho,
+      strength,
+      params: None,
+    };
   }
   Fit {
     curves,
     rho,
+    strength,
     params: Some(params),
   }
 }

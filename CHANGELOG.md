@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.8 - 2026-11-12
+
+### Changes
+
+- `diff` puts back grain that shimmers as much as the source's, not more. AV1 draws a new grain pattern for every frame, but part of a source's grain often stays in place from one frame to the next. The grain was put back at the strength of a single frame, so it changed two to three times more between frames than the source's and drew the eye. In a still shot of an anime Blu-ray, the source's grain changed by 0.44 between frames and the grain regrain put back by 0.88. regrain now compares the grain of consecutive frames where the picture stands still and scales each scene's grain to match, here to 0.55. `--full-strength` keeps the strength of a single frame, and `-v` shows each scene's scale as `strength`.
+
 ## 0.3.7 - 2026-11-11
 
 ### Fixes

@@ -119,6 +119,9 @@ enum Command {
     /// Put back only enough grain to hide banding, at most this deviation on a 0 to 255 scale
     #[arg(long, value_name = "DEVIATION", num_args = 0..=1, default_missing_value = "0.5")]
     just_enough: Option<f64>,
+    /// Put back the grain as strong as in single frames, also where the source's grain changes less from frame to frame than AV1 grain does
+    #[arg(long)]
+    full_strength: bool,
     /// Overwrite the output file if it exists
     #[arg(short = 'y', long)]
     overwrite: bool,
@@ -609,6 +612,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
       allow_vfr,
       output_depth,
       just_enough,
+      full_strength,
       overwrite,
       ffmpeg,
     } => {
@@ -643,6 +647,7 @@ fn run(command: Command, reporter: &Reporter) -> Result<()> {
         output_depth,
         just_enough,
         allow_vfr,
+        full_strength,
       };
       let (table, report) = diff::run(&options)?;
       let differ = report.mismatched * 5 > report.frames;
