@@ -33,7 +33,7 @@ E <start> <end> <apply_grain> <random_seed> <update_parameters>
 | `random_seed`       | 0 to 65535       | Seed of the decoder's random numbers for the grain pattern     |
 | `update_parameters` | 1                | 1 when parameter lines follow. Writers MUST write 1, see below |
 
-**Time units.** One second is `10000000`. libaom converts every frame's timestamp to these units (`TICKS_PER_SEC` in `av1/encoder/encoder.h`) and compares them with the table's times, and grav1synth, regrain and FGSEditor use the same units. A table for 24000/1001 fps video places frame 1 at `417083`. They are not nanoseconds: a table in nanoseconds would place every change 100 times too late.
+**Time units.** One second is `10000000`. libaom converts every frame's timestamp to these units (`TICKS_PER_SEC` in `av1/encoder/encoder.h`) and compares them with the table's times, and grav1synth, regrain and FGSEditor use the same units. A table for 24000/1001 fps video places frame 1 at `417083`. libaom counts the times from the first frame it encodes and rounds them down, so frame 7 at 24000/1001 is at `2919583`, and an entry that ends at `2919584` still covers it. They are not nanoseconds: a table in nanoseconds would place every change 100 times too late.
 
 **Which frames an entry covers.** A frame shown at time `t` belongs to the entry with `start <= t < end`, as in libaom's lookup. The start is included and the end is not.
 

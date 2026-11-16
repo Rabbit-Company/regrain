@@ -197,6 +197,10 @@ The output format follows the extension. `.ivf` is written directly, and so is `
 
 OBU and Annex B streams carry no timestamps. regrain then takes the frame rate from the timing info in the sequence header, from `--fps`, or uses 24000/1001.
 
+Frame times count from the first frame and are rounded down to table units, as libaom counts them when it encodes with a table. Containers can round timestamps: Matroska keeps milliseconds, so at 24000/1001 it stores the frame at 150.40025 s as 150.400 s. When every frame sits within a millisecond of the frames of a constant frame rate, regrain uses the exact time of the frame instead, so a video gets the same frame times in Matroska, or in an MP4 remuxed from Matroska, as in IVF. The frame rate is the lowest of `--fps`, the common rates from 15 to 240 and the one the timestamps give that fits every frame. Variable frame rate video keeps its timestamps.
+
+A table boundary up to a millisecond after a frame belongs to that frame, whether an entry starts or ends there. Tables with times rounded up or to milliseconds, as older exports and grav1synth write them, then cover the frames they were written for.
+
 The output is written under a temporary name and only takes its real name when everything succeeded.
 
 With `--verify`, regrain parses the written stream again, checks that every shown frame carries the grain the table gives it and that the grain follows every AV1 rule, and decodes the whole output with dav1d through ffmpeg. Messages the decoder also prints for the input are not counted against the output. Verifying adds about a minute per 1080p episode.
@@ -221,7 +225,7 @@ Tables from any tool are adjusted where AV1 requires it. For example, in 4:2:0 v
 regrain export <INPUT> -o <TABLE>
 ```
 
-Consecutive frames with the same parameters become one table entry. A table exported from a video that regrain wrote has the same entries as the table that was applied, and is identical to it when regrain wrote that table too.
+Consecutive frames with the same parameters become one table entry. A table exported from a video that regrain wrote has the same entries as the table that was applied, and is identical to it when regrain wrote that table too. Entries start and end at frame times counted as for `apply`, so a table exported from an encode places every change where the encoder's table did.
 
 ## remove
 

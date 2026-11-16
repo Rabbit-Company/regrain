@@ -2,6 +2,14 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.4.0 - 2026-11-16
+
+### Changes
+
+- `apply` and `export` count frame times as libaom does when it encodes with a table: from the first frame, rounded down. regrain rounded them up and counted from the time stamp zero, so `export` of an IVF or MP4 encode placed two of every three changes at 24000/1001 one tick after the time libaom uses, and libaom read such a table with each entry one frame longer. A raw IVF stream that starts later than zero had every entry shifted.
+- Constant frame rate video gets the exact time of each frame, worked out from its frame number, so Matroska's millisecond time stamps no longer move a frame across a table boundary. This also holds for an MP4 remuxed from Matroska, which keeps the rounding. A video counts as constant frame rate when every frame sits within a millisecond of a frame of the lowest fitting frame rate among `--fps`, the common rates from 15 to 240 and the one the time stamps give. Frames may be skipped, but not repeated. Variable frame rate video keeps its time stamps.
+- A table entry that ends up to a millisecond after a frame ends at that frame, as an entry that starts that close to a frame already started there. Tables that regrain 0.3 exported, or that grav1synth writes, round frame times up, and tables taken from Matroska round them to milliseconds, so their ends sit just after the frame they were written for. With exact frame times that frame would have kept the grain of the entry before a gap. Tables with exact frame times, as libaom and `diff` write them, are read as before.
+
 ## 0.3.9 - 2026-11-16
 
 ### Fixes
