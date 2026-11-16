@@ -2,6 +2,12 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.3.9 - 2026-11-16
+
+### Fixes
+
+- `apply` gave grain to the frame a table entry ends at when no entry starts there, such as the last frame of a video whose table ends where that frame starts. Matroska rounds frame times to milliseconds, so at 24000/1001 it can store that frame up to half a millisecond before the end, and regrain counted it as inside the entry. `export` then showed the entry one frame longer than the table. regrain now tells from the uneven steps between frame times that the container rounded them, and counts a frame that rounding can have moved before an end as at the end. Containers that store exact times, such as IVF and MP4, look entries up as before.
+
 ## 0.3.8 - 2026-11-12
 
 ### Changes

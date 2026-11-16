@@ -46,6 +46,8 @@ struct Scan {
   shown: Vec<(u64, u64, FrameGrain)>,
   had_grain: bool,
   format: Option<ChromaFormat>,
+  // How far the container's rounding can have moved a frame's time, in ticks.
+  rounding: u64,
 }
 
 fn scan(path: &Path, ffmpeg: &str, fps: Option<(u32, u32)>, progress: &dyn Fn(u64)) -> Result<Scan> {
@@ -71,7 +73,11 @@ fn scan_reader(reader: &mut VideoReader, progress: &dyn Fn(u64)) -> Result<Scan>
     shown: Vec::new(),
     had_grain: false,
     format: None,
+    rounding: 0,
   };
+  // The step between packet times, and whether it changes.
+  let mut step: (Option<u64>, bool) = (None, false);
+  let mut last_pts: Option<u64> = None;
   let mut slot_frame: [Option<usize>; NUM_REF_FRAMES] = [None; NUM_REF_FRAMES];
   let mut slot_grain: [Option<(GrainParams, u16)>; NUM_REF_FRAMES] = Default::default();
   let mut packets = 0u64;
@@ -81,6 +87,13 @@ fn scan_reader(reader: &mut VideoReader, progress: &dyn Fn(u64)) -> Result<Scan>
     result.packets = packets;
     progress(packets);
     let ticks = reader.timestamp(packet.pts, TICKS_PER_SECOND);
+    if let Some(last) = last_pts
+      && packet.pts > last
+    {
+      let gap = packet.pts - last;
+      step = (step.0.or(Some(gap)), step.1 || step.0.is_some_and(|first| first != gap));
+    }
+    last_pts = Some(packet.pts);
     let obus = parser
       .parse_packet(&packet.data)
       .with_context(|| format!("packet {packets}"))
@@ -126,6 +139,7 @@ fn scan_reader(reader: &mut VideoReader, progress: &dyn Fn(u64)) -> Result<Scan>
     }
   }
   result.format = parser.format();
+  result.rounding = rounding(reader.rate, reader.scale, step);
   Ok(result)
 }
 
@@ -179,8 +193,19 @@ pub struct ApplyReport {
   pub verified: bool,
 }
 
-fn segment_at(table: &GrainTable, ticks: u64) -> Option<usize> {
-  table.find(ticks + TIMESTAMP_TOLERANCE).or_else(|| table.find(ticks))
+// A frame just before a start is in the segment, one just before an end only if rounding can't explain the gap.
+fn segment_at(table: &GrainTable, ticks: u64, rounding: u64) -> Option<usize> {
+  table
+    .find(ticks + TIMESTAMP_TOLERANCE)
+    .or_else(|| table.find(ticks + rounding.min(TIMESTAMP_TOLERANCE)))
+}
+
+// Uneven steps between frame times mean the container rounded them, by up to half a time base unit.
+fn rounding(rate: u32, scale: u32, steps: (Option<u64>, bool)) -> u64 {
+  match steps {
+    (Some(_), true) if rate > 0 => (scale as u64 * TICKS_PER_SECOND).div_ceil(2 * rate as u64),
+    _ => 0,
+  }
 }
 
 // When reading fails while ffmpeg feeds the input, ffmpeg usually stopped first.
@@ -230,7 +255,7 @@ fn verify(
   // A frame shown twice keeps the grain of its first showing.
   for (_, ticks, grain) in &written.shown {
     let expected = table
-      .and_then(|table| segment_at(table, *ticks).map(|index| table.segments[index].params.normalized(format)))
+      .and_then(|table| segment_at(table, *ticks, written.rounding).map(|index| table.segments[index].params.normalized(format)))
       .filter(|params| !params.is_empty());
     if let Some((params, _)) = grain {
       let errors = params.conformance_errors(format);
@@ -279,6 +304,7 @@ fn frame_seed(segment: &Segment, ticks: u64, static_grain: bool) -> u16 {
 struct Rewriter<'a> {
   table: Option<&'a GrainTable>,
   display: Vec<Option<u64>>,
+  rounding: u64,
   compact: bool,
   static_grain: bool,
   normalized: Vec<Option<GrainParams>>,
@@ -290,10 +316,11 @@ struct Rewriter<'a> {
 }
 
 impl<'a> Rewriter<'a> {
-  fn new(table: Option<&'a GrainTable>, display: Vec<Option<u64>>, compact: bool, static_grain: bool) -> Self {
+  fn new(table: Option<&'a GrainTable>, display: Vec<Option<u64>>, rounding: u64, compact: bool, static_grain: bool) -> Self {
     Rewriter {
       table,
       display,
+      rounding,
       compact,
       static_grain,
       normalized: Vec::new(),
@@ -319,7 +346,7 @@ impl<'a> Rewriter<'a> {
         .collect();
     }
     let ticks = (*self.display.get(self.index)?)?;
-    let found = segment_at(table, ticks)?;
+    let found = segment_at(table, ticks, self.rounding)?;
     self.normalized[found].as_ref().map(|_| found)
   }
 
@@ -424,7 +451,7 @@ pub fn apply(input_path: &Path, output_path: &Path, table: Option<&GrainTable>, 
   let scan = scan(input_path, options.ffmpeg, options.fps, &|done| progress(Stage::Read, done, None))?;
   let frames_shown = scan.shown.len();
   let frames = scan.display.len();
-  let mut rewriter = Rewriter::new(table, scan.display.clone(), options.compact, options.static_grain);
+  let mut rewriter = Rewriter::new(table, scan.display.clone(), scan.rounding, options.compact, options.static_grain);
   let mut input = Input::open(input_path, options.ffmpeg, options.fps)?;
   let fps = (input.reader.rate, input.reader.scale);
   let mut output = Output::create(output_path, input_path, &input.reader, options.ffmpeg)?;
@@ -486,6 +513,57 @@ mod tests {
 
   const TABLE: &str = "filmgrn1\nE 0 2000000 1 100 1\n  p 2 7 0 10 0 1 128 192 256 128 192 256\n  sY 3 0 20 100 60 255 25\n  sCb 2 0 20 255 30\n  sCr 1 128 25\n  cY 2 4 6 4 2 4 10 24 10 4 6 26\n  cCb 0 0 4 0 0 0 6 16 6 0 4 18 20\n  cCr 0 0 0 0 0 0 0 0 0 0 0 0 0\nE 2000000 9223372036854775807 1 200 1\n  p 0 6 0 11 0 1 128 192 256 128 192 256\n  sY 1 128 40\n  sCb 0\n  sCr 0\n  cY\n  cCb 0\n  cCr 0\n";
 
+  #[test]
+  fn millisecond_times_find_the_segment_of_the_exact_time() {
+    // The first entry ends where frame 3606 at 24000/1001 starts, and nothing follows it.
+    let text = TABLE
+      .replace("E 0 2000000", "E 0 1504002500")
+      .replace("E 2000000 ", "E 1600000000 ");
+    let table = GrainTable::parse(&text).unwrap();
+    for (frame, expected) in [
+      (1, Some(0)),
+      (3605, Some(0)),
+      (3606, None),
+      (3607, None),
+      (3836, None),
+      (3837, Some(1)),
+    ] {
+      let exact = frame * 1001 * TICKS_PER_SECOND / 24000;
+      let milliseconds = (exact + 5_000) / 10_000 * 10_000;
+      assert_eq!(segment_at(&table, exact, 0), expected, "frame {frame} at its exact time");
+      assert_eq!(segment_at(&table, milliseconds, 5_000), expected, "frame {frame} in milliseconds");
+    }
+  }
+
+  #[test]
+  fn exact_times_keep_a_frame_just_before_an_end() {
+    // Ends less than a millisecond after frame 6, which is still in the entry.
+    let frame = 6 * 1001 * TICKS_PER_SECOND / 24000;
+    for end in [frame + 1, frame + 5_000] {
+      let text = TABLE
+        .replace("E 0 2000000", &format!("E 0 {end}"))
+        .replace("E 2000000 ", "E 9000000 ");
+      let table = GrainTable::parse(&text).unwrap();
+      assert_eq!(segment_at(&table, frame, 0), Some(0), "end {end}");
+    }
+    // Half a millisecond after the frame is more than Matroska's rounding moves it.
+    let text = TABLE
+      .replace("E 0 2000000", &format!("E 0 {}", frame + 5_000))
+      .replace("E 2000000 ", "E 9000000 ");
+    let table = GrainTable::parse(&text).unwrap();
+    assert_eq!(segment_at(&table, 2_500_000, 5_000), Some(0));
+  }
+
+  #[test]
+  fn rounding_comes_from_uneven_steps() {
+    assert_eq!(rounding(1000, 1, (Some(42), true)), 5_000);
+    assert_eq!(rounding(1000, 1, (Some(40), false)), 0);
+    assert_eq!(rounding(24000, 1001, (Some(1), false)), 0);
+    assert_eq!(rounding(24000, 1, (Some(1001), false)), 0);
+    assert_eq!(rounding(90000, 1, (Some(3754), true)), 56);
+    assert_eq!(rounding(1000, 1, (None, false)), 0);
+  }
+
   // Runs a stream through everything apply and export do. Errors are fine, panics are not.
   fn exercise(data: &[u8], table: &GrainTable) {
     let Ok(mut reader) = VideoReader::open(Box::new(Cursor::new(data.to_vec())), None) else {
@@ -495,7 +573,7 @@ mod tests {
     let Ok(mut reader) = VideoReader::open(Box::new(Cursor::new(data.to_vec())), None) else {
       return;
     };
-    let mut rewriter = Rewriter::new(Some(table), scan.display, true, false);
+    let mut rewriter = Rewriter::new(Some(table), scan.display, scan.rounding, true, false);
     let mut parser = StreamParser::new();
     while let Ok(Some(packet)) = reader.next_packet() {
       if rewriter.packet(&mut parser, &packet.data).is_err() {
