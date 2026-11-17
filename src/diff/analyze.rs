@@ -272,13 +272,41 @@ struct BlockInfo {
   constant_source: bool,
   residual_sum: i64,
   residual_variance: f64,
+  // How much more the source varies than the denoised picture, once both slopes are out.
+  // A denoiser that weakens grain instead of removing it leaves part of it in the picture,
+  // and the difference between the videos then holds less grain than the denoiser took
+  // away. This is what new grain has to add to bring the picture back to the source's.
+  grain_variance: f64,
+}
+
+// Sums of a block's values, used to take out its mean and slope.
+#[derive(Default)]
+struct Moments {
+  sum: i64,
+  sum_sq: i64,
+  sum_x: i64,
+  sum_y: i64,
+}
+
+impl Moments {
+  // Variance left after the best fitting plane is taken out.
+  fn texture(&self, bw: usize, bh: usize) -> (f64, f64) {
+    let n = (bw * bh) as f64;
+    let mean = self.sum as f64 / n;
+    let variance = (self.sum_sq as f64 / n - mean * mean).max(0.0);
+    let mean_x = (bw as f64 - 1.0) / 2.0;
+    let mean_y = (bh as f64 - 1.0) / 2.0;
+    let var_x = (bw as f64 * bw as f64 - 1.0) / 12.0;
+    let var_y = (bh as f64 * bh as f64 - 1.0) / 12.0;
+    let cov_x = self.sum_x as f64 / n - mean * mean_x;
+    let cov_y = self.sum_y as f64 / n - mean * mean_y;
+    (mean, (variance - cov_x * cov_x / var_x - cov_y * cov_y / var_y).max(0.0))
+  }
 }
 
 fn block_info<T: Sample>(source: &[T], denoised: &[T], stride: usize, x0: usize, y0: usize, bw: usize, bh: usize) -> BlockInfo {
-  let mut sum = 0i64;
-  let mut sum_sq = 0i64;
-  let mut sum_x = 0i64;
-  let mut sum_y = 0i64;
+  let mut den = Moments::default();
+  let mut src = Moments::default();
   let mut residual_sum = 0i64;
   let mut residual_sq = 0i64;
   let mut source_min = i32::MAX;
@@ -288,9 +316,8 @@ fn block_info<T: Sample>(source: &[T], denoised: &[T], stride: usize, x0: usize,
     let den_row = &denoised[start..start + bw];
     let src_row = &source[start..start + bw];
     // Sample values are clamped to 12 bits, so a row of up to 32 of them fits these 32 bit sums.
-    let mut row_sum = 0i32;
-    let mut row_sq = 0i32;
-    let mut row_x = 0i32;
+    let (mut row_sum, mut row_sq, mut row_x) = (0i32, 0i32, 0i32);
+    let (mut src_sum, mut src_sq, mut src_x) = (0i32, 0i32, 0i32);
     let mut row_res = 0i32;
     let mut row_res_sq = 0i32;
     let mut row_min = i32::MAX;
@@ -302,30 +329,28 @@ fn block_info<T: Sample>(source: &[T], denoised: &[T], stride: usize, x0: usize,
       row_sum += d;
       row_sq += d * d;
       row_x += d * x as i32;
+      src_sum += s;
+      src_sq += s * s;
+      src_x += s * x as i32;
       row_res += r;
       row_res_sq += r * r;
       row_min = row_min.min(s);
       row_max = row_max.max(s);
     }
-    sum += row_sum as i64;
-    sum_sq += row_sq as i64;
-    sum_x += row_x as i64;
-    sum_y += row_sum as i64 * y as i64;
+    for (moments, sum, sq, sx) in [(&mut den, row_sum, row_sq, row_x), (&mut src, src_sum, src_sq, src_x)] {
+      moments.sum += sum as i64;
+      moments.sum_sq += sq as i64;
+      moments.sum_x += sx as i64;
+      moments.sum_y += sum as i64 * y as i64;
+    }
     residual_sum += row_res as i64;
     residual_sq += row_res_sq as i64;
     source_min = source_min.min(row_min);
     source_max = source_max.max(row_max);
   }
   let n = (bw * bh) as f64;
-  let mean = sum as f64 / n;
-  let variance = (sum_sq as f64 / n - mean * mean).max(0.0);
-  let mean_x = (bw as f64 - 1.0) / 2.0;
-  let mean_y = (bh as f64 - 1.0) / 2.0;
-  let var_x = (bw as f64 * bw as f64 - 1.0) / 12.0;
-  let var_y = (bh as f64 * bh as f64 - 1.0) / 12.0;
-  let cov_x = sum_x as f64 / n - mean * mean_x;
-  let cov_y = sum_y as f64 / n - mean * mean_y;
-  let texture = (variance - cov_x * cov_x / var_x - cov_y * cov_y / var_y).max(0.0);
+  let (mean, texture) = den.texture(bw, bh);
+  let (_, source_texture) = src.texture(bw, bh);
   let residual_mean = residual_sum as f64 / n;
   let residual_variance = (residual_sq as f64 / n - residual_mean * residual_mean).max(0.0);
   BlockInfo {
@@ -334,6 +359,7 @@ fn block_info<T: Sample>(source: &[T], denoised: &[T], stride: usize, x0: usize,
     constant_source: source_min == source_max,
     residual_sum,
     residual_variance,
+    grain_variance: (source_texture - texture).max(0.0),
   }
 }
 
@@ -418,6 +444,21 @@ fn remove_plane(values: &mut [i16], bw: usize, bh: usize) -> i64 {
     }
   }
   power
+}
+
+// Copies a block of a picture, in fixed point without its mean and slope. Returns its power.
+fn flat_block<T: Sample>(picture: &[T], stride: usize, x0: usize, y0: usize, bw: usize, bh: usize, block: &mut [i16]) -> i64 {
+  let mut sum = 0i64;
+  for y in 0..bh {
+    let start = (y0 + y) * stride + x0;
+    for x in 0..bw {
+      let value = picture[start + x].value() & 0xfff;
+      block[y * bw + x] = value as i16;
+      sum += value as i64;
+    }
+  }
+  centre(block, false, sum);
+  remove_plane(block, bw, bh)
 }
 
 fn correlate(block: &[i16], bw: usize, bh: usize, power: i64, weight: f64, out: &mut [f64; LAGS]) {
@@ -569,7 +610,7 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
         }
         let stats = if flatness == 2 { &mut strict } else { &mut loose };
         let bin = scratch.luma_bins[cell] as usize;
-        let bucket = variance_bucket(info.residual_variance / variance_scale);
+        let bucket = variance_bucket(info.grain_variance / variance_scale);
         stats.observations.push((bin * BUCKETS + bucket) as u16);
         stats.levels.push(result.thumbnail[cell]);
         if info.residual_variance <= 0.0 {
@@ -590,6 +631,29 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
         if !(correlated - 1).is_multiple_of(stride) {
           continue;
         }
+        // The grain's pattern is the source's minus the denoised picture's, each without its
+        // slope, for the same reason its strength is: a denoiser can leave part of the grain in.
+        // Both are added up over all blocks before they are compared, so blocks with strong
+        // grain decide the pattern and a block whose two halves come out uneven does not.
+        let source_block = &mut scratch.block[..bw * bh];
+        let source_power = flat_block(src, pw, bx * bw, by * bh, bw, bh, source_block);
+        if source_power > 0 {
+          let denoised_block = &mut scratch.partner[..bw * bh];
+          let denoised_power = flat_block(den, pw, bx * bw, by * bh, bw, bh, denoised_block);
+          let fixed_power = (bw * bh) as f64 * (1 << (2 * FIXED_SHIFT)) as f64;
+          let variance = source_power as f64 / fixed_power;
+          correlate(source_block, bw, bh, source_power, variance, &mut stats.correlation);
+          stats.weight += variance;
+          if denoised_power > 0 {
+            let variance = denoised_power as f64 / fixed_power;
+            correlate(denoised_block, bw, bh, denoised_power, -variance, &mut stats.correlation);
+            stats.weight -= variance;
+          }
+          stats.samples += 1;
+        }
+        if plane == 0 {
+          continue;
+        }
         let block = &mut scratch.block[..bw * bh];
         for y in 0..bh {
           let start = (by * bh + y) * pw + bx * bw;
@@ -602,16 +666,6 @@ pub fn analyze<T: Sample>(layout: &Layout, index: u64, source: &[T], denoised: &
           continue;
         }
         let weight = info.residual_variance / (info.residual_variance + noise_floor);
-        let flat_power = remove_plane(block, bw, bh);
-        if flat_power > 0 {
-          let variance = flat_power as f64 / (bw * bh) as f64 / (1 << (2 * FIXED_SHIFT)) as f64;
-          correlate(block, bw, bh, flat_power, variance, &mut stats.correlation);
-          stats.weight += variance;
-          stats.samples += 1;
-        }
-        if plane == 0 {
-          continue;
-        }
         let luma = &mut scratch.partner[..bw * bh];
         let mut luma_sum = 0i64;
         let mut luma_full_sum = 0i64;
@@ -768,6 +822,45 @@ mod tests {
       "flat blocks must count as strictly flat"
     );
     assert!(result.planes[1].weight > 0.0);
+  }
+
+  // A denoiser that keeps half of the grain's amplitude leaves a quarter of its power in the
+  // picture and a quarter in the difference. New grain has to bring back the other three
+  // quarters to make the picture as grainy as the source, and fine grain has to stay fine.
+  #[test]
+  fn measures_what_a_denoiser_took_away_from_grain_it_weakened() {
+    let format = PixelFormat {
+      bit_depth: 10,
+      mono: true,
+      subsampling_x: true,
+      subsampling_y: true,
+    };
+    let layout = Layout {
+      width: 256,
+      height: 128,
+      format,
+    };
+    let (source, clean) = noise_frame(&layout, 8.0, 5);
+    let denoised: Vec<u16> = source
+      .iter()
+      .zip(&clean)
+      .map(|(&s, &c)| ((s as f64 + c as f64) / 2.0).round() as u16)
+      .collect();
+    let result = analyze(&layout, 0, &source, &denoised, &mut Scratch::default());
+    let luma = &result.planes[0];
+    let mean_variance: f64 = luma
+      .observations
+      .iter()
+      .map(|&slot| bucket_variance((slot as usize % BUCKETS) as f64 + 0.5))
+      .sum::<f64>()
+      / luma.observations.len() as f64;
+    // 8 code values at 10 bit are 2 on the 0 to 255 scale, so the source's grain power is 4.
+    assert!((mean_variance / 3.0 - 1.0).abs() < 0.08, "variance {mean_variance}");
+    let rho = luma.correlation[lag_index(1, 0)] / luma.weight;
+    assert!(rho.abs() < 0.05, "rho {rho}");
+    // The pattern weighs each block by the same three quarters, in 10 bit code values.
+    let weight = luma.weight / luma.samples as f64;
+    assert!((weight / 48.0 - 1.0).abs() < 0.08, "weight {weight}");
   }
 
   // Grain made of a part that stays in place and a part of the same strength that is new in

@@ -19,11 +19,11 @@ Tables use the `filmgrn1` text format that libaom, SVT-AV1 and grav1synth also r
 ## Typical workflow
 
 ```sh
-# 1. Denoise the source with any denoiser and keep the result lossless.
-# 2. Measure what the denoiser removed.
-regrain diff original.mkv denoised.mkv -o grain.tbl
+# 1. Denoise the source with any denoiser.
+# 2. Encode the denoised video to AV1 with any encoder, without film grain.
+# 3. Measure the grain the denoiser and the encoder removed together.
+regrain diff original.mkv encode.ivf -o grain.tbl
 
-# 3. Encode the denoised video to AV1 with any encoder, without film grain.
 # 4. Put the measured grain into the encode.
 regrain apply encode.ivf -o final.ivf --table grain.tbl
 ```
@@ -170,7 +170,7 @@ The table is the same for every thread count.
 
 1. Both videos are decoded at their native bit depth. Nothing is reduced to 8 bit.
 2. Each frame is split into 32 by 32 blocks. A block is used when the denoised picture in it is flat, so that the difference holds grain and not removed detail. Strictly flat blocks vary by less than about 1.4 levels on the 0 to 255 scale. Loosely flat blocks are within three times the flattest tenth of the frame, and are only used for a scene with fewer than 100 strictly flat blocks, such as one full of foliage, or after a denoiser that left noise everywhere. Chroma blocks also need flat luma, because denoisers change colour along luma edges.
-3. For every scene, regrain collects how strong the grain is at each brightness and how neighbouring grain pixels relate to each other. AV1 gives a frame one grain pattern for every brightness, so the pattern is measured over the grain of all blocks together, after each block's slope is taken out. Blocks with strong grain then decide it, and faint blocks, where an encoder or denoiser also removed dim texture and left a coarser difference, count for little.
+3. For every scene, regrain collects how strong the grain is at each brightness and how neighbouring grain pixels relate to each other. Both come from what the denoiser took away: how much more the source varies than the denoised picture, and how much more alike its neighbouring pixels are, each block without its slope. The difference between the two videos holds less than that when a denoiser weakens the grain instead of removing it, as most do with the finest grain, and grain of only that strength left the picture weaker and coarser than the source. AV1 gives a frame one grain pattern for every brightness, so the pattern is measured over the grain of all blocks together. Blocks with strong grain then decide it, and faint blocks, where an encoder or denoiser also removed dim texture and left a coarser difference, count for little.
 4. The strength at each brightness is the mean over all blocks of the scene. Blocks more than 8 times above the median are left out, since those almost always hold removed detail.
 5. The decoder rounds the grain it adds to whole code values of the encode, which adds a little noise of its own. regrain takes that away from the target, at the bit depth given by `--output-depth`. A source with fewer bits than the denoised video, such as an 8 bit Blu-ray measured against a 10 bit encode, also carries the rounding of its own bits, a deviation of 0.29 of its step. A screen shows the output in whole steps again, so regrain takes that away as well. With `--scale` the source is filtered at the measured depth, which smooths its rounding, and nothing is taken away.
 6. The grain pattern is fitted as an AV1 autoregressive filter with the smallest lag that describes it.

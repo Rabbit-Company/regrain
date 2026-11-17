@@ -2,6 +2,13 @@
 
 Error codes, JSON field names and the film grain table format stay compatible within a major version. Messages meant for people may change in any release.
 
+## 0.5.0 - 2026-11-17
+
+### Changes
+
+- `diff` measures the grain a denoiser took away rather than the difference between the two videos. Most denoisers weaken the finest grain instead of removing it, so part of it stays in the picture, and the difference then holds less grain than was taken away and leans to the coarser grain that was removed in full. regrain put back grain of that strength and pattern, which left the picture weaker and coarser than the source. It now measures how much more the source varies than the denoised picture, and how much more alike its neighbouring pixels are, in every flat block. On a 1080p film scan in H.264 with rabbit-denoise, the grain put back went from 22 to 8 per cent weaker than the source's and finer, from 0.52 to 0.47 neighbouring pixel likeness where the source has 0.38. With NL4D it went from 10 per cent weaker to the source's strength. Tables measured against an encode, which removes the grain it smooths in full, stay about the same.
+- The README's workflow measures the grain against the encode rather than the denoised video, so the table also holds the grain the encoder smoothed away. Measuring against the denoised video still works.
+
 ## 0.4.0 - 2026-11-16
 
 ### Changes

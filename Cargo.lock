@@ -250,7 +250,7 @@ checksum = "110e05cbcddd9a64d6f86dbd5558f6f0d46196e8f6e67146160d8125b8dbc8db"
 
 [[package]]
 name = "regrain"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
